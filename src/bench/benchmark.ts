@@ -65,7 +65,7 @@ class ScenarioDriver {
     return {
       scrollStartTick,
       pxPerTick,
-      bottomPitch: 20,
+      topPitch: 88 + 20,
       pxPerPitch: (h - 40) / 88,
       viewportWidth: w,
       viewportHeight: h,

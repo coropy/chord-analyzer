@@ -23,13 +23,13 @@ layout(location=1) in vec4 aRect;   // (startTick, endTick, pitch, velocity01)
 uniform float uPxPerTick;
 uniform float uScrollTick;   // tick at left edge of viewport
 uniform float uPxPerPitch;
-uniform float uBottomPitch;  // pitch (MIDI number) at bottom edge
+uniform float uTopPitch;     // pitch (MIDI number) at top edge
 uniform vec2  uViewport;     // canvas size in px
 out vec3 vColor;
 void main() {
   float x  = mix(aRect.x, aRect.y, aQuad.x);
   float px = (x - uScrollTick) * uPxPerTick;
-  float py = (aRect.z - uBottomPitch) * uPxPerPitch;
+  float py = (aRect.z - uTopPitch) * uPxPerPitch;
   vec2 n = vec2(px, py) / uViewport * 2.0 - vec2(1.0, 1.0);
   gl_Position = vec4(n.x, -n.y, 0.0, 1.0); // y down in canvas -> flip so pitch up
   vColor = vec3(0.30, 0.75, 1.00) * (0.45 + 0.55 * aRect.w);
@@ -48,7 +48,7 @@ const UNIT_QUAD = new Float32Array([0,0, 1,0, 0,1, 0,1, 1,0, 1,1]);
 export interface RenderView {
   scrollStartTick: number;
   pxPerTick: number;
-  bottomPitch: number;
+  topPitch: number;
   pxPerPitch: number;
   viewportWidth: number;
   viewportHeight: number;
@@ -94,7 +94,7 @@ export class WebGL2NoteRenderer implements GLNoteRenderer {
   constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
     this.program = this.link();
-    for (const n of ['uPxPerTick','uScrollTick','uPxPerPitch','uBottomPitch','uViewport']) {
+    for (const n of ['uPxPerTick','uScrollTick','uPxPerPitch','uTopPitch','uViewport']) {
       this.uniforms[n] = gl.getUniformLocation(this.program, n);
     }
     this.vao = gl.createVertexArray()!;
@@ -135,9 +135,16 @@ export class WebGL2NoteRenderer implements GLNoteRenderer {
     this.lastVisibleUploaded = -1; // force re-upload next draw
   }
 
+  private trackVisible: boolean[] | null = null;
+  setTrackVisibility(v: boolean[] | null): void {
+    this.trackVisible = v;
+    this.lastVisibleUploaded = -1; // force re-cull
+  }
+
   /** Fill scratch with visible notes; return visible count. */
   private cull(notes: NoteSet, tLo: number, tHi: number): number {
     const o = notes.order, s = notes.startTicks, e = notes.endTicks;
+    const tv = this.trackVisible;
     const fi = lowerBoundStart(notes, tLo - notes.maxDur);
     const hi = lowerBoundStart(notes, tHi + 1e-9);
     let w = 0;
@@ -145,6 +152,10 @@ export class WebGL2NoteRenderer implements GLNoteRenderer {
     for (let i = fi; i < hi; i++) {
       const idx = o[i];
       if (e[idx] < tLo) continue;
+      if (tv) {
+        const t = notes.tracks[idx];
+        if (!tv[t]) continue;
+      }
       const base = w * 4;
       st[base+0] = s[idx];
       st[base+1] = e[idx];
@@ -192,7 +203,7 @@ export class WebGL2NoteRenderer implements GLNoteRenderer {
     g.uniform1f(this.uniforms.uPxPerTick, view.pxPerTick);
     g.uniform1f(this.uniforms.uScrollTick, view.scrollStartTick);
     g.uniform1f(this.uniforms.uPxPerPitch, view.pxPerPitch);
-    g.uniform1f(this.uniforms.uBottomPitch, view.bottomPitch);
+    g.uniform1f(this.uniforms.uTopPitch, view.topPitch);
     g.uniform2f(this.uniforms.uViewport, view.viewportWidth, view.viewportHeight);
     g.bindVertexArray(this.vao);
     g.viewport(0, 0, view.viewportWidth, view.viewportHeight);
