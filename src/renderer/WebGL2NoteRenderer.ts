@@ -27,11 +27,15 @@ uniform float uTopPitch;     // pitch (MIDI number) at top edge
 uniform vec2  uViewport;     // canvas size in px
 out vec3 vColor;
 void main() {
-  float x  = mix(aRect.x, aRect.y, aQuad.x);
-  float px = (x - uScrollTick) * uPxPerTick;
-  float py = (aRect.z - uTopPitch) * uPxPerPitch;
+  float x    = mix(aRect.x, aRect.y, aQuad.x);
+  // Vertex pitch: quad spans the semitone band centered on aRect.z.
+  // aQuad.y=0 -> pitch+0.5 (top edge), aQuad.y=1 -> pitch-0.5 (bottom edge).
+  float pitch = aRect.z + (0.5 - aQuad.y);
+  float px    = (x - uScrollTick) * uPxPerTick;
+  // py grows downward in canvas px, matching pitchToY / drawPianoKeys.
+  float py    = (uTopPitch - pitch) * uPxPerPitch;
   vec2 n = vec2(px, py) / uViewport * 2.0 - vec2(1.0, 1.0);
-  gl_Position = vec4(n.x, -n.y, 0.0, 1.0); // y down in canvas -> flip so pitch up
+  gl_Position = vec4(n.x, -n.y, 0.0, 1.0); // canvas y down -> flip so pitch up
   vColor = vec3(0.30, 0.75, 1.00) * (0.45 + 0.55 * aRect.w);
 }
 `;
@@ -169,6 +173,7 @@ export class WebGL2NoteRenderer implements GLNoteRenderer {
 
   draw(n: NoteSet, view: RenderView): void {
     const g = this.gl;
+    g.clear(g.COLOR_BUFFER_BIT);
     const tLo = view.scrollStartTick;
     const tHi = tLo + view.viewportWidth / view.pxPerTick;
 

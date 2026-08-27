@@ -96,9 +96,8 @@ export function mount(root: HTMLElement): void {
   const glCanvas = $<HTMLCanvasElement>('gl');
   const overlay = $<HTMLCanvasElement>('overlay');
   const piano = $<HTMLCanvasElement>('piano');
-  const topbar = $<HTMLElement>('topbar');
-  const debugbar = $<HTMLElement>('debugbar');
   const trackbar = $<HTMLElement>('trackbar');
+  const stage = $<HTMLElement>('stage');
   const fpsEl = $<HTMLElement>('fps');
   const frEl = $<HTMLElement>('fr');
   const cpuEl = $<HTMLElement>('cpu');
@@ -115,9 +114,10 @@ export function mount(root: HTMLElement): void {
 
   const PIANO_W = 52;
   const applySize = (): void => {
-    const bg = $<HTMLElement>('wrap');
-    const w = Math.max(200, bg.clientWidth - PIANO_W);
-    const h = Math.max(240, bg.clientHeight - topbar.offsetHeight - debugbar.offsetHeight - trackbar.offsetHeight);
+    // Measure the actual available stage area; used to be overflowing into the
+    // trackbar because the canvas was sized from #wrap minus the as-yet-empty bars.
+    const w = Math.max(200, stage.clientWidth - PIANO_W);
+    const h = Math.max(200, stage.clientHeight);
     for (const c of [glCanvas, overlay]) {
       c.width = w; c.height = h;
       c.style.width = w + 'px'; c.style.height = h + 'px';
@@ -203,8 +203,10 @@ export function mount(root: HTMLElement): void {
         topPitch: pitchMax + 1,
         pxPerPitch: fitP,
       });
-      camera = clampPitch(camera);
+      camera = clampScroll(clampPitch(camera));
       renderTracks(doc.tracks.length);
+      applySize();
+      camera = clampScroll(clampPitch(camera));
       loadStatus.textContent = `${label} · ${doc.notes.length} notes / ${doc.tracks.length} tracks` + (audioReady ? '' : ' · 音声未選択');
     } catch (err) {
       console.error(err);
@@ -342,21 +344,74 @@ export function mount(root: HTMLElement): void {
   const PITCH_MARGIN = 2;
   let pitchMin = MIDI_MIN_PITCH;
   let pitchMax = MIDI_MAX_PITCH;
-
-  /** Clamp camera so the visible pitch range never leaves [pitchMin-1, pitchMax+1]. */
+  const MIN_PX_PER_PITCH = 4;      // full-range fit (fully shrink-stopped)
+  const MAX_PX_PER_PITCH = 90;     // zoom-in limit (one semitone band becomes large)
   function clampPitch(cam: Camera): Camera {
     if (!model) return cam;
-    // visible bottom pitch = topPitch - height/pxPerPitch
     const topVisible = cam.topPitch;
-    const pxPer = Math.max(cam.pxPerPitch, 1e-4);
-    const visibleBottom = topVisible - glCanvas.height / pxPer;
-    let top = cam.topPitch;
+    // full band [min-…, max+…] that must stay reachable.
     const lo = pitchMin - PITCH_MARGIN;
     const hi = pitchMax + PITCH_MARGIN;
-    // if viewport taller than range, center it so the whole range is always visible
-    if (visibleBottom < lo) top = lo + glCanvas.height / pxPer;
-    else if (topVisible > hi) top = hi;
+    const minPx = Math.min(glCanvas.height / Math.max(1, hi - lo), MIN_PX_PER_PITCH);
+    const maxPx = MAX_PX_PER_PITCH;
+    // zoom caps
+    const pxCapped = Math.max(minPx, Math.min(cam.pxPerPitch, maxPx));
+    if (pxCapped !== cam.pxPerPitch) cam = { ...cam, pxPerPitch: pxCapped };
+    const px = cam.pxPerPitch;
+    const heightPx = glCanvas.height;
+    // Clamp scroll so the visible pitch window never leaves [lo, hi].
+    // topPitch maps to y=0; bottom visible pitch = topPitch - heightPx/px.
+    // Filter: lo <= bottomVisible AND topVisible <= hi
+    const minTop = lo + heightPx / px;
+    const maxTop = hi;
+    const top = Math.max(minTop, Math.min(topVisible, maxTop));
     return { ...cam, topPitch: top };
+  }
+  const clampedPxPerPitch = (px: number): number => {
+    if (!model) return Math.max(px, MIN_PX_PER_PITCH);
+    const lo = pitchMin - PITCH_MARGIN, hi = pitchMax + PITCH_MARGIN;
+    return Math.max(glCanvas.height / Math.max(1, hi - lo), Math.min(px, MAX_PX_PER_PITCH));
+  };
+  function zoomVertical(factor: number): void {
+    const cy = glCanvas.height / 2;
+    const anchorPitch = yToPitch(camera, cy);
+    const np = clampedPxPerPitch(camera.pxPerPitch * factor);
+    camera = clampPitch({ ...camera, pxPerPitch: np, topPitch: anchorPitch + cy / np });
+  }
+
+  // ---- horizontal bounds (first..last note, with margin like vertical) ----
+  const clampedPxPerTick = (px: number): number => {
+    if (!model) return px;
+    const span = model.maxTick - model.minTick;
+    const minPx = span > 0 ? Math.min(glCanvas.width / span, 0.05) : 0.05;
+    return Math.max(minPx, Math.min(px, 2));
+  };
+  function tickMargin(): number {
+    if (!model) return 0;
+    return Math.max(0, Math.round((model.maxTick - model.minTick) / 50));
+  }
+  function clampScroll(cam: Camera): Camera {
+    if (!model) return cam;
+    const margin = tickMargin();
+    const lo = model.minTick - margin;
+    const hi = model.maxTick + margin;
+    const widthTicks = glCanvas.width / Math.max(1e-4, cam.pxPerTick);
+    let s = cam.scrollTick;
+    const minS = lo;
+    const maxS = hi - widthTicks;
+    if (widthTicks >= (hi - lo)) {
+      s = lo - (widthTicks - (hi - lo)) / 2;
+    } else {
+      s = Math.max(minS, Math.min(s, maxS));
+    }
+    return { ...cam, scrollTick: s };
+  }
+  function zoomHorizontal(factor: number): void {
+    const cx = glCanvas.width / 2;
+    const anchorTick = xToTick(camera, cx);
+    const npx = clampedPxPerTick(camera.pxPerTick * factor);
+    const after = { ...camera, pxPerTick: npx, scrollTick: anchorTick - cx / npx };
+    camera = clampScroll(after);
   }
   glCanvas.addEventListener('pointerdown', (e) => {
     pan.x = e.clientX; pan.y = e.clientY; pan.down = true; pan.moved = false;
@@ -367,7 +422,9 @@ export function mount(root: HTMLElement): void {
     const dx = e.clientX - pan.x, dy = e.clientY - pan.y;
     if (Math.abs(dx) + Math.abs(dy) > 3) pan.moved = true;
     if (pan.moved) {
-      camera = clampPitch({ ...camera, scrollTick: camera.scrollTick - dx / camera.pxPerTick, topPitch: camera.topPitch + dy / camera.pxPerPitch });
+      let c: Camera = { ...camera, scrollTick: camera.scrollTick - dx / camera.pxPerTick, topPitch: camera.topPitch + dy / camera.pxPerPitch };
+      c = clampScroll(c);
+      camera = clampPitch(c);
       pan.x = e.clientX; pan.y = e.clientY;
     }
   });
@@ -387,12 +444,13 @@ export function mount(root: HTMLElement): void {
     const f = e.deltaY < 0 ? 1.15 : 1 / 1.15;
     if (e.shiftKey) {
       const anchorPitch = yToPitch(camera, my);
-      const np = Math.max(0.5, Math.min(60, camera.pxPerPitch * f));
+      const np = clampedPxPerPitch(camera.pxPerPitch * f);
       camera = clampPitch({ ...camera, pxPerPitch: np, topPitch: anchorPitch + my / np });
     } else {
       const anchorTick = xToTick(camera, mx);
-      const npx = Math.max(1e-4, Math.min(5, camera.pxPerTick * f));
-      camera = { ...camera, pxPerTick: npx, scrollTick: anchorTick - mx / npx };
+      const npx = clampedPxPerTick(camera.pxPerTick * f);
+      const after = { ...camera, pxPerTick: npx, scrollTick: anchorTick - mx / npx };
+      camera = clampScroll(after);
     }
   });
   gridSel.addEventListener('change', (e) => {
@@ -409,6 +467,10 @@ export function mount(root: HTMLElement): void {
     else if (e.key === ' ') { e.preventDefault(); playBtn.click(); }
     else if (e.key === 'ArrowLeft') { e.preventDefault(); nudgeSelected(-1); }
     else if (e.key === 'ArrowRight') { e.preventDefault(); nudgeSelected(1); }
+    else if (e.key === '=' || e.key === '+') { e.preventDefault(); zoomVertical(1.25); }
+    else if (e.key === '-' || e.key === '_') { e.preventDefault(); zoomVertical(1 / 1.25); }
+    else if (e.key === ']' || e.key === '}') { e.preventDefault(); zoomHorizontal(1.25); }
+    else if (e.key === '[' || e.key === '{') { e.preventDefault(); zoomHorizontal(1 / 1.25); }
   });
 
   // ---- monitor (E2E probe) ----
