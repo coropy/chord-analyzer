@@ -16,7 +16,7 @@ import { WebGL2NoteRenderer, type RenderView } from './renderer/WebGL2NoteRender
 import { WavAudioSource, type AudioTimelineSource } from './audio/AudioSource';
 import { buildTempoMap, tickToSeconds, secondsToTick, tickToBarBeat, type TempoMap } from './time/timeline';
 import { gridConfig } from './time/grid';
-import { makeCamera, xToTick, yToPitch, type CameraView } from './time/camera';
+import { makeCamera, xToTick, yToPitch, type Camera, type CameraView } from './time/camera';
 import { drawGridAndPlayhead, drawPianoKeys, drawMarkersAndRegions } from './renderer/overlay2d';
 import { FrameTimeHistogram } from './perf/frameStats';
 import { startRafProbe } from './perf/rafDiagnostic';
@@ -173,81 +173,87 @@ export function mount(root: HTMLElement): void {
     }
   }
 
-  // ---- load data from user-selected files ----
-  let midiBuffer: ArrayBuffer | null = null;
-  let audioBuffer: ArrayBuffer | null = null;
-  let midiReady = false;
+  // ---- load data from selected MIDI + audio ----
   let audioReady = false;
 
-  /** Called after both files selected; builds notes + audio, then enables Play. */
-  async function load(): Promise<void> {
-    if (!midiBuffer || !audioBuffer) return;
-    loadStatus.textContent = '読み込み中…';
+  /** Build notes + display from a MIDI buffer. Independent of audio. */
+  function buildMidi(buffer: ArrayBuffer, label: string): void {
     try {
-      const doc = parseMidi(new Uint8Array(midiBuffer));
+      const doc = parseMidi(new Uint8Array(buffer));
       tempoMap = buildTempoMap(doc);
       model = buildNoteModel(doc.notes);
+      // clamp display to the MIDI's actual high/low range
+      pitchMin = Infinity; pitchMax = -Infinity;
+      for (let i = 0; i < model.count; i++) {
+        const p = model.pitches[i];
+        if (p < pitchMin) pitchMin = p;
+        if (p > pitchMax) pitchMax = p;
+      }
+      if (!isFinite(pitchMin)) { pitchMin = MIDI_MIN_PITCH; pitchMax = MIDI_MAX_PITCH; }
       ppq = doc.ppq;
       trackVisible = Array.from({ length: doc.tracks.length }, () => true);
       trackCounts = doc.tracks.map((t) => t.noteCount);
       renderer.uploadNotes(model);
       renderer.setTrackVisibility(trackVisible);
 
-      const fitP = glCanvas.height / ((MIDI_MAX_PITCH - MIDI_MIN_PITCH) + 2);
+      const fitP = glCanvas.height / ((pitchMax - pitchMin) + 2);
       camera = makeCamera({
         scrollTick: model.minTick,
         pxPerTick: glCanvas.width / Math.max(1, model.maxTick - model.minTick),
-        topPitch: MIDI_MAX_PITCH + 1,
+        topPitch: pitchMax + 1,
         pxPerPitch: fitP,
       });
+      camera = clampPitch(camera);
+      renderTracks(doc.tracks.length);
+      loadStatus.textContent = `${label} · ${doc.notes.length} notes / ${doc.tracks.length} tracks` + (audioReady ? '' : ' · 音声未選択');
+    } catch (err) {
+      console.error(err);
+      loadStatus.textContent = 'MIDIエラー: ' + (err instanceof Error ? err.message : String(err));
+    }
+  }
 
-      audio = new WavAudioSource(audioBuffer);
+  /** Decode audio and enable playback. Independent of MIDI. */
+  async function loadAudio(buffer: ArrayBuffer, label: string): Promise<void> {
+    try {
+      audio = new WavAudioSource(buffer);
       await audio.load();
       audio.onEnded = () => { playBtn.textContent = '▶ Play'; };
       playBtn.disabled = false;
       stopBtn.disabled = false;
-      renderTracks(doc.tracks.length);
-      loadStatus.textContent = `読み込み完了 (${doc.notes.length} notes, ${doc.tracks.length} tracks)`;
+      audioReady = true;
+      loadStatus.textContent = (midiStatusLabel ?? 'MIDI未選択') + ` × ${label}`;
     } catch (err) {
       console.error(err);
-      loadStatus.textContent = '読み込みエラー: ' + (err instanceof Error ? err.message : String(err));
+      loadStatus.textContent = '音声エラー: ' + (err instanceof Error ? err.message : String(err));
     }
   }
+  let midiStatusLabel: string | null = null;
 
-  /** TS: arrayBuffer() returns ArrayBuffer; browsers give a view of file bytes. */
   async function fileToBuffer(file: File): Promise<ArrayBuffer> {
-    const ab = await file.arrayBuffer();
-    return ab;
+    return await file.arrayBuffer();
   }
 
   midiInput.addEventListener('change', async () => {
     const f = midiInput.files?.[0];
     if (!f) return;
-    midiBuffer = await fileToBuffer(f);
-    midiReady = true;
-    midiInput.dataset.name = f.name;
-    updateLoadState();
+    const buf = await fileToBuffer(f);
+    midiStatusLabel = f.name;
+    buildMidi(buf, f.name);
   });
 
   audioInput.addEventListener('change', async () => {
     const f = audioInput.files?.[0];
     if (!f) return;
-    audioBuffer = await fileToBuffer(f);
-    audioReady = true;
-    audioInput.dataset.name = f.name;
-    updateLoadState();
+    const buf = await fileToBuffer(f);
+    void loadAudio(buf, f.name);
   });
 
-  function updateLoadState(): void {
-    const m = midiInput.dataset.name || '—';
-    const a = audioInput.dataset.name || '—';
-    if (midiReady && audioReady) {
-      loadStatus.textContent = `${m} × ${a}`;
-      void load();
-    } else {
-      loadStatus.textContent = `MIDI: ${m} · 音声: ${a} ${midiReady && audioReady ? '' : '(両方選択で開始)'}`;
-    }
-  }
+  // Auto-load the bundled default MIDI so notes appear immediately on launch.
+  midiStatusLabel = 'default (./data/nakanori_mt3.mid)';
+  fetch('./data/nakanori_mt3.mid')
+    .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error('default midi: HTTP ' + r.status))))
+    .then((b) => buildMidi(b, 'default'))
+    .catch((e) => { loadStatus.textContent = 'MIDI要選択: ' + (e?.message ?? e); });
 
   // ---- playback ----
   playBtn.addEventListener('click', () => {
@@ -332,6 +338,26 @@ export function mount(root: HTMLElement): void {
 
   // ---- interaction: click to seek ----
   let pan = { x: 0, y: 0, down: false, moved: false };
+  /** Vertical scroll bounds. Bottom edge is lowest pitch. */
+  const PITCH_MARGIN = 2;
+  let pitchMin = MIDI_MIN_PITCH;
+  let pitchMax = MIDI_MAX_PITCH;
+
+  /** Clamp camera so the visible pitch range never leaves [pitchMin-1, pitchMax+1]. */
+  function clampPitch(cam: Camera): Camera {
+    if (!model) return cam;
+    // visible bottom pitch = topPitch - height/pxPerPitch
+    const topVisible = cam.topPitch;
+    const pxPer = Math.max(cam.pxPerPitch, 1e-4);
+    const visibleBottom = topVisible - glCanvas.height / pxPer;
+    let top = cam.topPitch;
+    const lo = pitchMin - PITCH_MARGIN;
+    const hi = pitchMax + PITCH_MARGIN;
+    // if viewport taller than range, center it so the whole range is always visible
+    if (visibleBottom < lo) top = lo + glCanvas.height / pxPer;
+    else if (topVisible > hi) top = hi;
+    return { ...cam, topPitch: top };
+  }
   glCanvas.addEventListener('pointerdown', (e) => {
     pan.x = e.clientX; pan.y = e.clientY; pan.down = true; pan.moved = false;
     glCanvas.setPointerCapture(e.pointerId);
@@ -341,7 +367,7 @@ export function mount(root: HTMLElement): void {
     const dx = e.clientX - pan.x, dy = e.clientY - pan.y;
     if (Math.abs(dx) + Math.abs(dy) > 3) pan.moved = true;
     if (pan.moved) {
-      camera = { ...camera, scrollTick: camera.scrollTick - dx / camera.pxPerTick, topPitch: camera.topPitch + dy / camera.pxPerPitch };
+      camera = clampPitch({ ...camera, scrollTick: camera.scrollTick - dx / camera.pxPerTick, topPitch: camera.topPitch + dy / camera.pxPerPitch });
       pan.x = e.clientX; pan.y = e.clientY;
     }
   });
@@ -362,7 +388,7 @@ export function mount(root: HTMLElement): void {
     if (e.shiftKey) {
       const anchorPitch = yToPitch(camera, my);
       const np = Math.max(0.5, Math.min(60, camera.pxPerPitch * f));
-      camera = { ...camera, pxPerPitch: np, topPitch: anchorPitch + my / np };
+      camera = clampPitch({ ...camera, pxPerPitch: np, topPitch: anchorPitch + my / np });
     } else {
       const anchorTick = xToTick(camera, mx);
       const npx = Math.max(1e-4, Math.min(5, camera.pxPerTick * f));

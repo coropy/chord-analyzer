@@ -11,11 +11,19 @@ async function main() {
 
   await page.goto('http://localhost:5173/', { waitUntil: 'networkidle' });
 
-  // load MIDI + WAV via the new file inputs (no auto-fetch anymore)
-  await page.setInputFiles('#midiFile', 'data/nakanori_mt3.mid');
+  // Default MIDI auto-loads on launch; notes should appear without any file pick.
+  await page.waitForFunction(
+    `(document.querySelector('#loadStatus')?.textContent ?? '').includes('notes') && document.querySelector('#vis')?.textContent?.trim() !== 'vis —'`,
+    { timeout: 15000 },
+  );
+  let auto = await page.evaluate(`(() => ({vis: document.querySelector('#vis')?.textContent?.trim(), status: document.querySelector('#loadStatus')?.textContent?.trim()}))()`);
+  console.log('AUTO default MIDI: vis=' + auto.vis, '| status=' + auto.status);
+  if (auto.vis?.replace(/\D/g, '') !== '1909') console.log('WARN: auto MIDI not showing 1909 notes (vis=' + auto.vis + ')');
+
+  // Now also load audio via file input to enable playback
   await page.setInputFiles('#audioFile', 'data/nakanori_instrumental.wav');
   await page.waitForSelector('#playBtn:not([disabled])', { timeout: 20000 });
-  console.log('PASS: MIDI+WAV loaded via file inputs, play enabled');
+  console.log('PASS: audio loaded via file input, play enabled');
 
   // start playback, let a couple markers be added via Enter
   await page.click('#playBtn');
