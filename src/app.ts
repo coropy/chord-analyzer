@@ -1,22 +1,28 @@
 /**
- * Phase 3 app: Timeline (piano roll + grid + playhead) with WAV playback.
+ * Phase 4 app: Timeline + Marker + Quantize + Chord Region + Undo/Redo.
  *
- * - Tick-canonical: MIDI parsed to SoA notes; WebGL renderer draws via uniforms.
- * - Audio: WAV via AudioSource; position from audio engine clock only.
- * - Camera: zoom/scroll; screenX<->tick transforms ready for markers.
- * - Track visibility toggles; grid (bar/beat/division) + piano strip.
- * - Perf overlay: FPS, frame ms, CPU/GPU, visible notes.
+ * Extends the Phase 3 WebGL2 piano roll with:
+ *  - Enter: add Marker at the current audio-engine position (raw tick).
+ *  - Markers as crisp vertical lines; chord regions between markers translucent.
+ *  - Quantize ON/OFF + division (1/4,1/8,1/16,1/32, bar/N). rawTick never mutates.
+ *  - Undo/Redo (Ctrl+Z / Ctrl+Shift+Z), Backspace/Delete delete, Left/Right nudge.
+ *  - Click timeline = seek (markers added via Enter only, so they never collide).
+ *  - rAF timing diagnostic: distinguishes monitor-driven vs headless frame clock.
  */
 import './style.css';
 import { parseMidi } from './midi/MidiParser';
 import { buildNoteModel, type NoteModel } from './model/NoteModel';
 import { WebGL2NoteRenderer, type RenderView } from './renderer/WebGL2NoteRenderer';
 import { WavAudioSource, type AudioTimelineSource } from './audio/AudioSource';
-import { buildTempoMap, tickToSeconds, secondsToTick, type TempoMap } from './time/timeline';
+import { buildTempoMap, tickToSeconds, secondsToTick, tickToBarBeat, type TempoMap } from './time/timeline';
 import { gridConfig } from './time/grid';
 import { makeCamera, xToTick, yToPitch, type CameraView } from './time/camera';
-import { drawGridAndPlayhead, drawPianoKeys } from './renderer/overlay2d';
+import { drawGridAndPlayhead, drawPianoKeys, drawMarkersAndRegions } from './renderer/overlay2d';
 import { FrameTimeHistogram } from './perf/frameStats';
+import { startRafProbe } from './perf/rafDiagnostic';
+import { buildRegions, type Marker, type ChordRegion, type QuantizeLayout } from './marker/marker';
+import { CommandEngine } from './marker/history';
+import { quantizeTick, divisionLabel, type QuantizeDivision } from './marker/quantize';
 
 const MIDI_PATH = '/data/nakanori_mt3.mid';
 const WAV_PATH = '/data/nakanori_instrumental.wav';
@@ -36,12 +42,33 @@ export function mount(root: HTMLElement): void {
           <option value="4">1/4</option><option value="8" selected>1/8</option>
           <option value="16">1/16</option><option value="32">1/32</option>
         </select></label>
+        <label>Quantize
+          <input type="checkbox" id="quantToggle" checked />
+          <select id="quantSel">
+            <option value="bar/8" selected>1 bar / 8</option>
+            <option value="1/4">1/4</option>
+            <option value="1/8">1/8</option>
+            <option value="1/16">1/16</option>
+            <option value="1/32">1/32</option>
+          </select>
+        </label>
         <span class="sep"></span>
+        <button id="undoBtn" disabled>↶ Undo</button>
+        <button id="redoBtn" disabled>↷ Redo</button>
+        <span class="sep"></span>
+        <span class="keyhint">Enter=Marker · Del=Delete · Space=Play · ←→=nudge · Ctrl+Z=Undo</span>
+        <span id="raf">rAF —</span>
         <span id="fps">— FPS</span>
         <span id="fr">— ms</span>
         <span id="cpu">cpu —</span>
         <span id="gpu">gpu —</span>
         <span id="vis">vis —</span>
+      </div>
+      <div id="debugbar">
+        <span class="dbg" id="dbgRaw">raw —</span>
+        <span class="dbg" id="dbgQuant">quant —</span>
+        <span class="dbg" id="dbgAudio">audio —</span>
+        <span class="dbg" id="dbgBar">bar/beat —</span>
       </div>
       <div id="stage">
         <div id="pianoWrap"><canvas id="piano"></canvas></div>
@@ -50,25 +77,37 @@ export function mount(root: HTMLElement): void {
       <div id="trackbar"></div>
     </div>`;
 
-  const playBtn = root.querySelector('#playBtn') as HTMLButtonElement;
-  const stopBtn = root.querySelector('#stopBtn') as HTMLButtonElement;
-  const posEl = root.querySelector('#pos') as HTMLElement;
-  const glCanvas = root.querySelector('#gl') as HTMLCanvasElement;
-  const overlay = root.querySelector('#overlay') as HTMLCanvasElement;
-  const piano = root.querySelector('#piano') as HTMLCanvasElement;
-  const topbar = root.querySelector('#topbar') as HTMLElement;
-  const trackbar = root.querySelector('#trackbar') as HTMLElement;
-  const fpsEl = root.querySelector('#fps') as HTMLElement;
-  const frEl = root.querySelector('#fr') as HTMLElement;
-  const cpuEl = root.querySelector('#cpu') as HTMLElement;
-  const gpuEl = root.querySelector('#gpu') as HTMLElement;
-  const visEl = root.querySelector('#vis') as HTMLElement;
+  const $ = <T extends HTMLElement>(id: string): T => root.querySelector('#' + id) as T;
+  const playBtn = $<HTMLButtonElement>('playBtn');
+  const stopBtn = $<HTMLButtonElement>('stopBtn');
+  const undoBtn = $<HTMLButtonElement>('undoBtn');
+  const redoBtn = $<HTMLButtonElement>('redoBtn');
+  const posEl = $<HTMLElement>('pos');
+  const glCanvas = $<HTMLCanvasElement>('gl');
+  const overlay = $<HTMLCanvasElement>('overlay');
+  const piano = $<HTMLCanvasElement>('piano');
+  const topbar = $<HTMLElement>('topbar');
+  const debugbar = $<HTMLElement>('debugbar');
+  const trackbar = $<HTMLElement>('trackbar');
+  const fpsEl = $<HTMLElement>('fps');
+  const frEl = $<HTMLElement>('fr');
+  const cpuEl = $<HTMLElement>('cpu');
+  const gpuEl = $<HTMLElement>('gpu');
+  const visEl = $<HTMLElement>('vis');
+  const rafEl = $<HTMLElement>('raf');
+  const dbgRaw = $<HTMLElement>('dbgRaw');
+  const dbgQuant = $<HTMLElement>('dbgQuant');
+  const dbgAudio = $<HTMLElement>('dbgAudio');
+  const dbgBar = $<HTMLElement>('dbgBar');
+  const quantToggle = $<HTMLInputElement>('quantToggle');
+  const quantSel = $<HTMLSelectElement>('quantSel');
+  const gridSel = $<HTMLSelectElement>('gridSel');
 
   const PIANO_W = 52;
   const applySize = (): void => {
-    const bg = root.querySelector('#wrap') as HTMLElement;
+    const bg = $<HTMLElement>('wrap');
     const w = Math.max(200, bg.clientWidth - PIANO_W);
-    const h = Math.max(240, bg.clientHeight - topbar.offsetHeight - trackbar.offsetHeight);
+    const h = Math.max(240, bg.clientHeight - topbar.offsetHeight - debugbar.offsetHeight - trackbar.offsetHeight);
     for (const c of [glCanvas, overlay]) {
       c.width = w; c.height = h;
       c.style.width = w + 'px'; c.style.height = h + 'px';
@@ -85,6 +124,8 @@ export function mount(root: HTMLElement): void {
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   const renderer = new WebGL2NoteRenderer(gl);
+  const hist = new FrameTimeHistogram(360);
+  const probe = startRafProbe();
 
   let model: NoteModel;
   let tempoMap: TempoMap | null = null;
@@ -94,10 +135,16 @@ export function mount(root: HTMLElement): void {
   let playheadTick = 0;
   let gridDiv = 8;
 
+  // ---- Phase 4 state ----
+  const engine = new CommandEngine();
+  let regions: ChordRegion[] = [];
+  let ppq = 480;
+
   const renderView = (): RenderView =>
     ({ scrollStartTick: camera.scrollTick, pxPerTick: camera.pxPerTick, topPitch: camera.topPitch, pxPerPitch: camera.pxPerPitch, viewportWidth: glCanvas.width, viewportHeight: glCanvas.height });
 
   // ---- track controls ----
+  let trackCounts: number[] = [];
   function renderTracks(n: number): void {
     trackbar.innerHTML = '';
     for (let i = 0; i < n; i++) {
@@ -115,19 +162,17 @@ export function mount(root: HTMLElement): void {
       trackbar.appendChild(label);
     }
   }
-  let trackCounts: number[] = [];
 
   // ---- load data ----
   async function load(): Promise<void> {
-    (window as unknown as Record<string, unknown>).__appDebug = { step: 'fetch-init' };
     const [mb, wb] = await Promise.all([
       (await fetch(MIDI_PATH)).arrayBuffer(),
       (await fetch(WAV_PATH)).arrayBuffer(),
     ]);
-    (window as unknown as Record<string, unknown>).__appDebug = { step: 'fetched-wav', size: wb.byteLength };
     const doc = parseMidi(new Uint8Array(mb));
     tempoMap = buildTempoMap(doc);
     model = buildNoteModel(doc.notes);
+    ppq = doc.ppq;
     trackVisible = Array.from({ length: doc.tracks.length }, () => true);
     trackCounts = doc.tracks.map((t) => t.noteCount);
     renderer.uploadNotes(model);
@@ -140,12 +185,10 @@ export function mount(root: HTMLElement): void {
       topPitch: MIDI_MAX_PITCH + 1,
       pxPerPitch: fitP,
     });
-    (window as unknown as Record<string, unknown>).__appDebug = { step: 'midi-done', notes: model.count };
 
     audio = new WavAudioSource(wb);
-    (window as unknown as Record<string, unknown>).__appDebug = { step: 'wav-decoding' };
     await audio.load();
-    (window as unknown as Record<string, unknown>).__appDebug = { step: 'audio-loaded' };
+    audio.onEnded = () => { playBtn.textContent = '▶ Play'; };
     playBtn.disabled = false;
     stopBtn.disabled = false;
     renderTracks(doc.tracks.length);
@@ -154,8 +197,8 @@ export function mount(root: HTMLElement): void {
   // ---- playback ----
   playBtn.addEventListener('click', () => {
     if (!audio?.loaded) return;
-    audio.play();
-    playBtn.textContent = 'Ⅱ Pause';
+    if (audio.playing) { audio.pause(); playBtn.textContent = '▶ Play'; }
+    else { audio.play(); playBtn.textContent = 'Ⅱ Pause'; }
   });
   stopBtn.addEventListener('click', () => {
     audio?.stop();
@@ -169,7 +212,70 @@ export function mount(root: HTMLElement): void {
     playheadTick = tick;
   }
 
-  // ---- interactions ----
+  // ---- marker helpers ----
+  function refreshRegions(): void { regions = buildRegions(engine.markers); }
+  function selectedMarker(): Marker | undefined {
+    if (engine.selectedId == null) return undefined;
+    return engine.markers.find((m) => m.id === engine.selectedId!);
+  }
+  function updateButtons(): void {
+    undoBtn.disabled = !engine.canUndo;
+    redoBtn.disabled = !engine.canRedo;
+  }
+
+  function addMarkerAtCurrent(): void {
+    if (!audio?.loaded || !tempoMap) return;
+    const sec = audio.getPositionSeconds();
+    const rawTick = secondsToTick(tempoMap, sec);
+    engine.addMarker(rawTick);
+    refreshRegions();
+    updateButtons();
+  }
+  function deleteSelected(): void {
+    if (engine.selectedId == null) return;
+    engine.deleteMarker(engine.selectedId);
+    refreshRegions();
+    updateButtons();
+  }
+  const NUDGE_TICKS = 24;
+  function nudgeSelected(dir: number): void {
+    if (engine.selectedId == null) return;
+    const m = selectedMarker();
+    if (!m) return;
+    engine.moveMarker(m.id, m.rawTick + dir * NUDGE_TICKS);
+    refreshRegions();
+    updateButtons();
+  }
+  function doUndo(): void { if (engine.undo()) { refreshRegions(); updateButtons(); } }
+  function doRedo(): void { if (engine.redo()) { refreshRegions(); updateButtons(); } }
+
+  // ---- quantize UI ----
+  const quantLayout: QuantizeLayout = { enabled: true, division: { barDivisions: 8 } };
+  function currentDivision(): QuantizeDivision {
+    const v = quantSel.value;
+    if (v === 'bar/8') return { barDivisions: 8 };
+    if (v === '1/4') return '1/4';
+    if (v === '1/8') return '1/8';
+    if (v === '1/16') return '1/16';
+    return '1/32';
+  }
+  function applyQuantize(): void {
+    // pass the desired layout to the engine; engine compares against its current
+    // layout and records a changeQuantize command only if it differs.
+    engine.setLayout({ enabled: quantLayout.enabled, division: quantLayout.division });
+    refreshRegions();
+    updateButtons();
+  }
+  quantToggle.addEventListener('change', () => {
+    quantLayout.enabled = quantToggle.checked;
+    applyQuantize();
+  });
+  quantSel.addEventListener('change', () => {
+    quantLayout.division = currentDivision();
+    applyQuantize();
+  });
+
+  // ---- interaction: click to seek ----
   let pan = { x: 0, y: 0, down: false, moved: false };
   glCanvas.addEventListener('pointerdown', (e) => {
     pan.x = e.clientX; pan.y = e.clientY; pan.down = true; pan.moved = false;
@@ -208,13 +314,36 @@ export function mount(root: HTMLElement): void {
       camera = { ...camera, pxPerTick: npx, scrollTick: anchorTick - mx / npx };
     }
   });
-
-  (root.querySelector('#gridSel') as HTMLSelectElement).addEventListener('change', (e) => {
+  gridSel.addEventListener('change', (e) => {
     gridDiv = Number((e.target as HTMLSelectElement).value);
   });
 
+  // ---- keyboard ----
+  window.addEventListener('keydown', (e) => {
+    const tag = (e.target as HTMLElement)?.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); e.shiftKey ? doRedo() : doUndo(); }
+    else if (e.key === 'Enter') { e.preventDefault(); addMarkerAtCurrent(); }
+    else if (e.key === 'Backspace' || e.key === 'Delete') { e.preventDefault(); deleteSelected(); }
+    else if (e.key === ' ') { e.preventDefault(); playBtn.click(); }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); nudgeSelected(-1); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); nudgeSelected(1); }
+  });
+
+  // ---- monitor (E2E probe) ----
+  (window as unknown as Record<string, unknown>).__appMonitor = () => ({
+    markers: engine.markers.map((m) => ({ id: m.id, raw: m.rawTick, q: m.quantizedTick, enabled: m.quantizeEnabled })),
+    regions: regions.length,
+    quantize: { enabled: engine.layout.enabled, division: divisionLabel(engine.layout.division) },
+    selected: engine.selectedId,
+    undoDepth: engine.undoDepth,
+    canUndo: engine.canUndo,
+    canRedo: engine.canRedo,
+    playing: audio?.playing ?? false,
+    pos: audio?.getPositionSeconds() ?? 0,
+  });
+
   // ---- render loop ----
-  const hist = new FrameTimeHistogram(360);
   let lastNow = performance.now();
   const oCtx = overlay.getContext('2d')!;
   const pCtx = piano.getContext('2d');
@@ -223,20 +352,21 @@ export function mount(root: HTMLElement): void {
     const ms = now - lastNow; lastNow = now;
     hist.push(ms);
     const st = hist.computeStats();
+    const rstat = probe.stats();
 
     if (!model || !tempoMap) { requestAnimationFrame(frame); return; }
 
     if (audio?.loaded) {
-      const pos = audio.getPositionSeconds();
-      playheadTick = secondsToTick(tempoMap, pos);
+      playheadTick = secondsToTick(tempoMap, audio.getPositionSeconds());
     }
     const view = renderView();
     renderer.draw(model, view);
 
     const oview: CameraView = { ...camera, viewportWidth: glCanvas.width, viewportHeight: glCanvas.height };
     const range = { left: oview.scrollTick, right: oview.scrollTick + oview.viewportWidth / oview.pxPerTick };
-    const grid = gridConfig(4, 2, tempoMap?.ppq ?? 480, gridDiv);
+    const grid = gridConfig(4, 2, ppq, gridDiv);
     drawGridAndPlayhead(oCtx, oview, grid, range, playheadTick);
+    drawMarkersAndRegions(oCtx, oview, engine.markers, regions, engine.selectedId);
     if (pCtx) drawPianoKeys(piano, oview);
 
     const sec = tempoMap ? tickToSeconds(tempoMap, playheadTick) : 0;
@@ -246,6 +376,15 @@ export function mount(root: HTMLElement): void {
     cpuEl.textContent = 'cpu ' + renderer.cpuUpdateMs.toFixed(3);
     gpuEl.textContent = 'gpu ' + renderer.drawMs.toFixed(3);
     visEl.textContent = 'vis ' + renderer.lastVisible;
+    rafEl.textContent = 'rAF ' + (rstat.observedHz > 0 ? rstat.observedHz.toFixed(0) + 'Hz' : '—') + ' · ' + rstat.notes;
+
+    // debug bar
+    const bb = tempoMap ? tickToBarBeat(playheadTick, ppq, 4, 2) : null;
+    dbgRaw.textContent = 'raw ' + Math.round(playheadTick);
+    const qr = quantizeTick(playheadTick, engine.layout.division, { ppq, numerator: 4 }).quantizedTick;
+    dbgQuant.textContent = 'quant ' + qr;
+    dbgAudio.textContent = 'audio ' + sec.toFixed(3) + 's';
+    dbgBar.textContent = bb ? `bar ${bb.bar} beat ${bb.beat}` : 'bar —';
 
     requestAnimationFrame(frame);
   };
@@ -256,8 +395,4 @@ export function mount(root: HTMLElement): void {
     playBtn.textContent = 'Load error';
     playBtn.disabled = false;
   });
-}
-
-export function mountApp(root: HTMLElement): void {
-  mount(root);
 }

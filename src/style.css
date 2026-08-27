@@ -14,7 +14,15 @@ html, body { margin: 0; height: 100%; background: #0b0f14; color: #dfe6ee;
 label { display: inline-flex; align-items: center; gap: 6px; color: #a9b7c6; }
 select { background: #1a2029; color: #dfe6ee; border: 1px solid #2c3440; border-radius: 4px; padding: 3px 6px; }
 #pos { font-variant-numeric: tabular-nums; color: #8fd0ff; }
-#fps, #fr, #cpu, #gpu, #vis { font-variant-numeric: tabular-nums; color: #9db5c9; }
+#fps, #fr, #cpu, #gpu, #vis, #raf { font-variant-numeric: tabular-nums; color: #9db5c9; }
+#undoBtn, #redoBtn { background: #3a4250; }
+#keyhint { color: #7b8898; font-size: 12px; }
+.keyhint { color: #7b8898; }
+
+#debugbar { display: flex; gap: 18px; padding: 3px 12px; background: #0d1117;
+  border-bottom: 1px solid #1c232c; font-size: 11px; color: #8fa3b8;
+  font-variant-numeric: tabular-nums; }
+#debugbar .dbg { color: #8fa3b8; }
 
 #stage { flex: 1; display: flex; min-height: 0; }
 #pianoWrap { width: 52px; border-right: 1px solid #232a33; background: #0c1620; }

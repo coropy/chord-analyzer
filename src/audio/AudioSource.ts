@@ -22,6 +22,7 @@ export interface AudioTimelineSource {
   getSnapshot(): AudioSnapshot;
   readonly duration: number;
   readonly loaded: boolean;
+  readonly playing: boolean;
   onEnded?: () => void;
 }
 

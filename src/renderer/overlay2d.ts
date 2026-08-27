@@ -9,6 +9,8 @@ import type { CameraView } from '../time/camera';
 import { tickToX, pitchToY } from '../time/camera';
 import type { GridConfig } from '../time/grid';
 import { enumerateGridLines } from '../time/grid';
+import type { Marker, ChordRegion } from '../marker/marker';
+import { effectiveTick } from '../marker/marker';
 
 export interface OverlayTheme {
   barLine: string;
@@ -20,6 +22,9 @@ export interface OverlayTheme {
   keyBg: string;
   blackKey: string;
   whiteKey: string;
+  marker: string;
+  markerSelected: string;
+  region: string;
 }
 
 export const defaultTheme: OverlayTheme = {
@@ -32,6 +37,9 @@ export const defaultTheme: OverlayTheme = {
   keyBg: '#0c1620',
   whiteKey: '#e9eef5',
   blackKey: '#11161d',
+  marker: 'rgba(255,214,120,0.95)',
+  markerSelected: 'rgba(255,255,255,1)',
+  region: 'rgba(120,210,120,0.18)',
 };
 
 export interface VisibleRange { left: number; right: number; }
@@ -92,6 +100,41 @@ export function drawGridAndPlayhead(
   ctx.moveTo(px, 0);
   ctx.lineTo(px, view.viewportHeight);
   ctx.stroke();
+}
+
+/**
+ * Draw chord regions as translucent bands, then markers as crisp vertical lines.
+ * Allocation-light: builds nothing per-frame beyond iterating the passed arrays.
+ * Selected marker is highlighted.
+ */
+export function drawMarkersAndRegions(
+  ctx: CanvasRenderingContext2D,
+  view: CameraView,
+  markers: Marker[],
+  regions: ChordRegion[],
+  selectedId: number | null,
+  theme: OverlayTheme = defaultTheme,
+): void {
+  // regions first (under markers)
+  ctx.fillStyle = theme.region;
+  for (const r of regions) {
+    const x0 = tickToX(view, r.startTick);
+    const x1 = tickToX(view, r.endTick);
+    if (x1 < 0 || x0 > view.viewportWidth) continue;
+    ctx.fillRect(x0, 0, Math.max(1, x1 - x0), view.viewportHeight);
+  }
+  // markers (vertical lines). Use effective tick for display.
+  ctx.lineWidth = 2;
+  for (const m of markers) {
+    const t = effectiveTick(m);
+    const x = Math.round(tickToX(view, t)) + 0.5;
+    if (x < -2 || x > view.viewportWidth + 2) continue;
+    ctx.strokeStyle = m.id === selectedId ? theme.markerSelected : theme.marker;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, view.viewportHeight);
+    ctx.stroke();
+  }
 }
 
 /** Draw the piano key strip (vertical) into `pianoEl`'s canvas at given height. */
