@@ -10,8 +10,12 @@ async function main() {
   page.on('pageerror', (e) => errors.push(String(e)));
 
   await page.goto('http://localhost:5173/', { waitUntil: 'networkidle' });
-  await page.waitForSelector('#playBtn:not([disabled])', { timeout: 15000 });
-  console.log('PASS: MIDI+WAV loaded, play enabled');
+
+  // load MIDI + WAV via the new file inputs (no auto-fetch anymore)
+  await page.setInputFiles('#midiFile', 'data/nakanori_mt3.mid');
+  await page.setInputFiles('#audioFile', 'data/nakanori_instrumental.wav');
+  await page.waitForSelector('#playBtn:not([disabled])', { timeout: 20000 });
+  console.log('PASS: MIDI+WAV loaded via file inputs, play enabled');
 
   // start playback, let a couple markers be added via Enter
   await page.click('#playBtn');

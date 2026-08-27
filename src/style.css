@@ -10,6 +10,12 @@ html, body { margin: 0; height: 100%; background: #0b0f14; color: #dfe6ee;
 #topbar button { background: #2d6cff; color: #fff; border: 0; border-radius: 5px;
   padding: 6px 12px; font-weight: 600; cursor: pointer; }
 #topbar button:disabled { opacity: 0.45; cursor: default; }
+.btn-file { display: inline-flex; align-items: center; gap: 6px; background: #223042;
+  color: #cfe6ff; border: 1px solid #2c4456; border-radius: 5px; padding: 4px 10px;
+  cursor: pointer; font-size: 12px; font-weight: 600; }
+.btn-file:hover { background: #2a3d52; }
+.btn-file input[type=file] { display: none; }
+#loadStatus { color: #7fb4e8; font-size: 12px; }
 .sep { width: 1px; height: 20px; background: #2c3440; }
 label { display: inline-flex; align-items: center; gap: 6px; color: #a9b7c6; }
 select { background: #1a2029; color: #dfe6ee; border: 1px solid #2c3440; border-radius: 4px; padding: 3px 6px; }

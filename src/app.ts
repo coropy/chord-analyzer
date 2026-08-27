@@ -24,8 +24,6 @@ import { buildRegions, type Marker, type ChordRegion, type QuantizeLayout } from
 import { CommandEngine } from './marker/history';
 import { quantizeTick, divisionLabel, type QuantizeDivision } from './marker/quantize';
 
-const MIDI_PATH = '/data/nakanori_mt3.mid';
-const WAV_PATH = '/data/nakanori_instrumental.wav';
 const MIDI_MIN_PITCH = 34;
 const MIDI_MAX_PITCH = 103;
 
@@ -34,6 +32,15 @@ export function mount(root: HTMLElement): void {
     <div id="wrap">
       <div id="topbar">
         <span class="brand">Chord Analyzer — Timeline</span>
+        <label class="btn-file">♪ MIDI (.mid)
+          <input type="file" id="midiFile" accept=".mid,.midi,.smf,audio/midi,audio/x-midi" />
+        </label>
+        <label class="btn-file">♫ 音声 (WAV/MP3)
+          <input type="file" id="audioFile" accept=".wav,.mp3,.ogg,.flac,.m4a,audio/*" />
+        </label>
+        <span class="sep"></span>
+        <span id="loadStatus">MIDI / 音声ファイルを選択してください</span>
+        <span class="sep"></span>
         <button id="playBtn" disabled>▶ Play</button>
         <button id="stopBtn" disabled>■ Stop</button>
         <span id="pos">0.000s / 0.000s</span>
@@ -78,6 +85,9 @@ export function mount(root: HTMLElement): void {
     </div>`;
 
   const $ = <T extends HTMLElement>(id: string): T => root.querySelector('#' + id) as T;
+  const midiInput = $<HTMLInputElement>('midiFile');
+  const audioInput = $<HTMLInputElement>('audioFile');
+  const loadStatus = $<HTMLElement>('loadStatus');
   const playBtn = $<HTMLButtonElement>('playBtn');
   const stopBtn = $<HTMLButtonElement>('stopBtn');
   const undoBtn = $<HTMLButtonElement>('undoBtn');
@@ -163,35 +173,80 @@ export function mount(root: HTMLElement): void {
     }
   }
 
-  // ---- load data ----
+  // ---- load data from user-selected files ----
+  let midiBuffer: ArrayBuffer | null = null;
+  let audioBuffer: ArrayBuffer | null = null;
+  let midiReady = false;
+  let audioReady = false;
+
+  /** Called after both files selected; builds notes + audio, then enables Play. */
   async function load(): Promise<void> {
-    const [mb, wb] = await Promise.all([
-      (await fetch(MIDI_PATH)).arrayBuffer(),
-      (await fetch(WAV_PATH)).arrayBuffer(),
-    ]);
-    const doc = parseMidi(new Uint8Array(mb));
-    tempoMap = buildTempoMap(doc);
-    model = buildNoteModel(doc.notes);
-    ppq = doc.ppq;
-    trackVisible = Array.from({ length: doc.tracks.length }, () => true);
-    trackCounts = doc.tracks.map((t) => t.noteCount);
-    renderer.uploadNotes(model);
-    renderer.setTrackVisibility(trackVisible);
+    if (!midiBuffer || !audioBuffer) return;
+    loadStatus.textContent = '読み込み中…';
+    try {
+      const doc = parseMidi(new Uint8Array(midiBuffer));
+      tempoMap = buildTempoMap(doc);
+      model = buildNoteModel(doc.notes);
+      ppq = doc.ppq;
+      trackVisible = Array.from({ length: doc.tracks.length }, () => true);
+      trackCounts = doc.tracks.map((t) => t.noteCount);
+      renderer.uploadNotes(model);
+      renderer.setTrackVisibility(trackVisible);
 
-    const fitP = glCanvas.height / ((MIDI_MAX_PITCH - MIDI_MIN_PITCH) + 2);
-    camera = makeCamera({
-      scrollTick: model.minTick,
-      pxPerTick: glCanvas.width / Math.max(1, model.maxTick - model.minTick),
-      topPitch: MIDI_MAX_PITCH + 1,
-      pxPerPitch: fitP,
-    });
+      const fitP = glCanvas.height / ((MIDI_MAX_PITCH - MIDI_MIN_PITCH) + 2);
+      camera = makeCamera({
+        scrollTick: model.minTick,
+        pxPerTick: glCanvas.width / Math.max(1, model.maxTick - model.minTick),
+        topPitch: MIDI_MAX_PITCH + 1,
+        pxPerPitch: fitP,
+      });
 
-    audio = new WavAudioSource(wb);
-    await audio.load();
-    audio.onEnded = () => { playBtn.textContent = '▶ Play'; };
-    playBtn.disabled = false;
-    stopBtn.disabled = false;
-    renderTracks(doc.tracks.length);
+      audio = new WavAudioSource(audioBuffer);
+      await audio.load();
+      audio.onEnded = () => { playBtn.textContent = '▶ Play'; };
+      playBtn.disabled = false;
+      stopBtn.disabled = false;
+      renderTracks(doc.tracks.length);
+      loadStatus.textContent = `読み込み完了 (${doc.notes.length} notes, ${doc.tracks.length} tracks)`;
+    } catch (err) {
+      console.error(err);
+      loadStatus.textContent = '読み込みエラー: ' + (err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /** TS: arrayBuffer() returns ArrayBuffer; browsers give a view of file bytes. */
+  async function fileToBuffer(file: File): Promise<ArrayBuffer> {
+    const ab = await file.arrayBuffer();
+    return ab;
+  }
+
+  midiInput.addEventListener('change', async () => {
+    const f = midiInput.files?.[0];
+    if (!f) return;
+    midiBuffer = await fileToBuffer(f);
+    midiReady = true;
+    midiInput.dataset.name = f.name;
+    updateLoadState();
+  });
+
+  audioInput.addEventListener('change', async () => {
+    const f = audioInput.files?.[0];
+    if (!f) return;
+    audioBuffer = await fileToBuffer(f);
+    audioReady = true;
+    audioInput.dataset.name = f.name;
+    updateLoadState();
+  });
+
+  function updateLoadState(): void {
+    const m = midiInput.dataset.name || '—';
+    const a = audioInput.dataset.name || '—';
+    if (midiReady && audioReady) {
+      loadStatus.textContent = `${m} × ${a}`;
+      void load();
+    } else {
+      loadStatus.textContent = `MIDI: ${m} · 音声: ${a} ${midiReady && audioReady ? '' : '(両方選択で開始)'}`;
+    }
   }
 
   // ---- playback ----
@@ -389,10 +444,4 @@ export function mount(root: HTMLElement): void {
     requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);
-
-  void load().catch((e) => {
-    console.error('load failed:', e);
-    playBtn.textContent = 'Load error';
-    playBtn.disabled = false;
-  });
 }
