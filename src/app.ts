@@ -26,6 +26,8 @@ import { quantizeTick, divisionLabel, type QuantizeDivision } from './marker/qua
 
 const MIDI_MIN_PITCH = 34;
 const MIDI_MAX_PITCH = 103;
+/** Default horizontal zoom: pixel width of one 1/8-note grid division. */
+const DEFAULT_1_8_DIV_PX = 36;
 
 export function mount(root: HTMLElement): void {
   root.innerHTML = `
@@ -190,8 +192,8 @@ export function mount(root: HTMLElement): void {
     const vCan = vMovable > 1e-3 && vVisible < vSpan;
     const vH = sbV ? sbV.clientHeight : 0;
     const vThumb = vCan ? Math.max(SCROLLBAR_PX, vH * (vVisible / vSpan)) : 0;
-    const vMinTop = vLo + H / camera.pxPerPitch;
-    const vFrac = vCan ? (camera.topPitch - vMinTop) / vMovable : 0;
+// topPitch = vHi (highest) -> thumb at top; topPitch = vMinTop (lowest) -> thumb at bottom.
+    const vFrac = vCan ? (vHi - camera.topPitch) / vMovable : 0;
     sbVT.style.top = (vFrac * Math.max(0, vH - vThumb)) + 'px';
     sbVT.style.height = vThumb + 'px';
     sbV.classList.toggle('visible', vCan);
@@ -291,17 +293,22 @@ export function mount(root: HTMLElement): void {
       trackCounts = doc.tracks.map((t) => t.noteCount);
       renderer.uploadNotes(model);
       renderer.setTrackVisibility(trackVisible);
-
-      const fitP = glCanvas.height / ((pitchMax - pitchMin) + 2);
-      camera = makeCamera({
-        scrollTick: model.minTick,
-        pxPerTick: glCanvas.width / Math.max(1, model.maxTick - model.minTick),
-        topPitch: pitchMax + 1,
-        pxPerPitch: fitP,
-      });
-      camera = clampScroll(clampPitch(camera));
       renderTracks(doc.tracks.length);
       applySize();
+      // Vertical: exact fit so the highest note sits on the top edge and the
+      // lowest on the bottom edge. span>0 implies pxPerPitch>0 -> no scrollbar.
+      const vSpan = Math.max(1e-6, pitchMax - pitchMin);
+      const pxPerPitchFull = glCanvas.height / vSpan;
+      // Horizontal: 1/8-note grid division has a fixed, readable pixel width.
+      // 1/8 division = one eighth-note = ppq/2 ticks in 4/4.
+      const ticksPerDiv = Math.max(1, Math.round(ppq * 4 / 8));
+      const pxPerTickDiv = DEFAULT_1_8_DIV_PX / ticksPerDiv;
+      camera = makeCamera({
+        scrollTick: model.minTick,
+        pxPerTick: pxPerTickDiv,
+        topPitch: pitchMax,
+        pxPerPitch: pxPerPitchFull,
+      });
       camera = clampScroll(clampPitch(camera));
       loadStatus.textContent = `${label} · ${doc.notes.length} notes / ${doc.tracks.length} tracks` + (audioReady ? '' : ' · 音声未選択');
     } catch (err) {
@@ -346,12 +353,8 @@ export function mount(root: HTMLElement): void {
     void loadAudio(buf, f.name);
   });
 
-  // Auto-load the bundled default MIDI so notes appear immediately on launch.
-  midiStatusLabel = 'default (./data/nakanori_mt3.mid)';
-  fetch('./data/nakanori_mt3.mid')
-    .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error('default midi: HTTP ' + r.status))))
-    .then((b) => buildMidi(b, 'default'))
-    .catch((e) => { loadStatus.textContent = 'MIDI要選択: ' + (e?.message ?? e); });
+  // Playback is only enabled once the user picks both files via the buttons.
+  // No default files are auto-loaded; the user selects every time.
 
   // ---- playback ----
   playBtn.addEventListener('click', () => {
@@ -436,8 +439,8 @@ export function mount(root: HTMLElement): void {
 
   // ---- interaction: click to seek ----
   let pan = { x: 0, y: 0, down: false, moved: false };
-  /** Vertical scroll bounds. Bottom edge is lowest pitch. */
-  const PITCH_MARGIN = 2;
+  /** Vertical scroll bounds. Bottom edge is lowest pitch. 0 = highest note at top edge. */
+  const PITCH_MARGIN = 0;
   let pitchMin = MIDI_MIN_PITCH;
   let pitchMax = MIDI_MAX_PITCH;
   const MIN_PX_PER_PITCH = 4;      // full-range fit (fully shrink-stopped)
