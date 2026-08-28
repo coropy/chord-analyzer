@@ -90,17 +90,17 @@ export function tickToSeconds(map: TempoMap, tick: number): number {
   return map.cumSeconds[i] + (t - map.boundaryTicks[i]) / map.ppq * (map.tempos[i] / 1_000_000);
 }
 
-/** seconds → tick. Inverse of tickToSeconds. */
+/** seconds → tick. Inverse of tickToSeconds. Returns fractional (playhead keeps sub-pixel smoothness). */
 export function secondsToTick(map: TempoMap, seconds: number): number {
   const s = Math.max(0, Math.min(map.durationSeconds, seconds));
   if (map.constantTempo !== null) {
-    return Math.round(s * map.ppq * 1_000_000 / map.constantTempo);
+    return s * map.ppq * 1_000_000 / map.constantTempo;
   }
   for (let i = map.boundaryTicks.length - 1; i >= 0; i--) {
     const startSec = map.cumSeconds[i];
     if (s >= startSec) {
       const localSec = s - startSec;
-      const tick = map.boundaryTicks[i] + Math.round(localSec * map.ppq * 1_000_000 / map.tempos[i]);
+      const tick = map.boundaryTicks[i] + localSec * map.ppq * 1_000_000 / map.tempos[i];
       return Math.max(0, tick);
     }
   }

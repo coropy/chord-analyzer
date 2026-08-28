@@ -505,6 +505,25 @@ export function mount(root: HTMLElement): void {
     }
     return { ...cam, scrollTick: s };
   }
+  /**
+   * Karaoke follow. Edge-pinning is the priority: when the playhead-centred
+   * view would let space outside the piece enter, pin the left/right edge to
+   * the viewport edge instead. scrollTick = clamp(tick - W/2, lo, hi - W).
+   */
+  function followScroll(cam: Camera, tick: number): Camera {
+    if (!model) return cam;
+    const m = tickMargin();
+    const lo = model.minTick - m;
+    const hi = model.maxTick + m;
+    const W = glCanvas.width / Math.max(1e-4, cam.pxPerTick);
+    if (W >= (hi - lo)) {
+      // Whole piece + margin fits: keep it fully inside, centred.
+      return { ...cam, scrollTick: lo - (W - (hi - lo)) / 2 };
+    }
+    // Edge-pinning via hard clamp: outer space never enters the view.
+    const s = Math.max(lo, Math.min(tick - W / 2, hi - W));
+    return { ...cam, scrollTick: s };
+  }
   function zoomHorizontal(factor: number): void {
     const cx = glCanvas.width / 2;
     const anchorTick = xToTick(camera, cx);
@@ -601,8 +620,11 @@ export function mount(root: HTMLElement): void {
     if (audio?.loaded) {
       playheadTick = secondsToTick(tempoMap, audio.getPositionSeconds());
     }
-    const view = renderView();
+    // Karaoke follow: drive the camera only during active playback so the
+    // view doesn't fight the user's manual pan/zoom when idle or stopped.
+    if (audio?.playing) camera = followScroll(camera, playheadTick);
     updateScrollbars();
+    const view = renderView();
     renderer.draw(model, view);
 
     const oview: CameraView = { ...camera, viewportWidth: glCanvas.width, viewportHeight: glCanvas.height };
@@ -624,7 +646,7 @@ export function mount(root: HTMLElement): void {
 
     // debug bar
     const bb = tempoMap ? tickToBarBeat(playheadTick, ppq, 4, 2) : null;
-    dbgRaw.textContent = 'raw ' + Math.round(playheadTick);
+    dbgRaw.textContent = 'raw ' + playheadTick.toFixed(1);
     const qr = quantizeTick(playheadTick, engine.layout.division, { ppq, numerator: 4 }).quantizedTick;
     dbgQuant.textContent = 'quant ' + qr;
     dbgAudio.textContent = 'audio ' + sec.toFixed(3) + 's';

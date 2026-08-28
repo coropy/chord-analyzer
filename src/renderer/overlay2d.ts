@@ -44,6 +44,18 @@ export const defaultTheme: OverlayTheme = {
 
 export interface VisibleRange { left: number; right: number; }
 
+/** Snap a screen coordinate to the half-pixel grid (2 sub-pixels) so 1px lines
+ *  stay crisp while still gliding smoothly during scroll.
+ *
+ *  NEVER snap to the full pixel grid: a threshold snap makes lines stick to an
+ *  integer pixel while the camera keeps moving, then jump — visible as judder
+ *  against the GPU-rendered notes which move continuously.
+ *  Rounding to nearest half-pixel keeps <0.5px per-frame drift invisible while
+ *  the line centre lands on a pixel, keeping 1px strokes sharp. */
+export function snapCoord(x: number): number {
+  return Math.round(x * 2) / 2;
+}
+
 /**
  * Draw grid lines + playhead + bar labels onto ctx (already cleared by caller or
  * cleared here). `view` matches the WebGL camera so lines line up exactly.
@@ -62,7 +74,9 @@ export function drawGridAndPlayhead(
   const lines = enumerateGridLines(grid, Math.floor(range.left), Math.ceil(range.right));
   ctx.lineWidth = 1;
   for (const l of lines) {
-    const x = Math.round(tickToX(view, l.tick)) + 0.5;
+    // Adaptive snap: full-pixel crisp when nearly still, half-pixel glide
+    // during scroll so grid/notes stay in lockstep without 1-2px jumps.
+    const x = snapCoord(tickToX(view, l.tick));
     if (x < -1 || x > view.viewportWidth + 1) continue;
     ctx.strokeStyle =
       l.kind === 'bar' ? theme.barLine :
@@ -85,16 +99,16 @@ export function drawGridAndPlayhead(
   const p1 = Math.ceil(Math.max(topP, botP) / 12) * 12;
   for (let p = p0; p <= p1; p += 12) {
     if (p < 0 || p > 127) continue;
-    const y = pitchToY(view, p);
+    const y = snapCoord(pitchToY(view, p));
     ctx.strokeStyle = theme.octaveLine;
     ctx.beginPath();
-    ctx.moveTo(0, Math.round(y) + 0.5);
-    ctx.lineTo(view.viewportWidth, Math.round(y) + 0.5);
+    ctx.moveTo(0, y);
+    ctx.lineTo(view.viewportWidth, y);
     ctx.stroke();
   }
 
   // playhead
-  const px = tickToX(view, playheadTick);
+  const px = snapCoord(tickToX(view, playheadTick));
   ctx.strokeStyle = theme.playhead;
   ctx.lineWidth = 2;
   ctx.beginPath();
@@ -128,7 +142,8 @@ export function drawMarkersAndRegions(
   ctx.lineWidth = 2;
   for (const m of markers) {
     const t = effectiveTick(m);
-    const x = Math.round(tickToX(view, t)) + 0.5;
+    // adaptive snap for crisp lines when still, sub-pixel glide during playback
+    const x = snapCoord(tickToX(view, t));
     if (x < -2 || x > view.viewportWidth + 2) continue;
     ctx.strokeStyle = m.id === selectedId ? theme.markerSelected : theme.marker;
     ctx.beginPath();
@@ -158,9 +173,9 @@ export function drawPianoKeys(
   const pHi = Math.ceil(Math.max(top, bot));
   const BLACKS = [1, 3, 6, 8, 10]; // sharps within octave
   for (let p = pHi; p >= pLo; p--) {
-    const y = pitchToY(view, p);
+    const y = Math.round(pitchToY(view, p)) + 0.5;
     const isBlack = p < 0 ? false : BLACKS.includes(p % 12);
     ctx.fillStyle = isBlack ? theme.blackKey : theme.whiteKey;
-    ctx.fillRect(0, Math.round(y) - Math.round(view.pxPerPitch / 2), W, Math.ceil(view.pxPerPitch) + 1);
+    ctx.fillRect(0, y - Math.round(view.pxPerPitch / 2), W, Math.ceil(view.pxPerPitch) + 1);
   }
 }
