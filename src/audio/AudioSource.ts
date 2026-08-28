@@ -85,13 +85,22 @@ export class WavAudioSource implements AudioTimelineSource {
 
   private spawn(): void {
     const ctx = this.ctx!;
-    this.source = ctx.createBufferSource();
-    this.source.buffer = this.buffer;
+    const source = ctx.createBufferSource();
+    source.buffer = this.buffer;
     const gain = ctx.createGain();
     gain.gain.value = 1;
-    this.source.connect(gain);
+    source.connect(gain);
     gain.connect(ctx.destination);
-    this.source.onended = () => { this.source = null; if (this.playing) this.playing = false; this.onEnded?.(); };
+    source.onended = () => {
+      // Only the CURRENT source may mutate state. A stopped/replaced source's
+      // onended fires later and must not clobber a newer source (e.g. after a
+      // playback seek), otherwise playback appears to stop while audio flows on.
+      if (this.source !== source) return;
+      this.source = null;
+      if (this.playing) this.playing = false;
+      this.onEnded?.();
+    };
+    this.source = source;
   }
 
   play(): void {
