@@ -43,6 +43,8 @@ export interface TickRecord {
   cpuMs: number;
   uploadBytes: number;
   visible: number;
+  /** camera horizontal zoom at this frame (CSS px per tick). */
+  pxPerTick: number;
 }
 
 export interface TickDeltaStats {
@@ -52,6 +54,12 @@ export interface TickDeltaStats {
   max: number;
   p1: number;
   p99: number;
+  /** population standard deviation of the deltas. */
+  std: number;
+  /** max positive deviation from the mean. */
+  maxPosDev: number;
+  /** max negative deviation from the mean. */
+  maxNegDev: number;
   /** max absolute single-frame |delta|. >~2.5x median step => visible jump. */
   maxJump: number;
   medianStep: number;
@@ -80,6 +88,13 @@ export interface TickStreamSnapshot {
     scrollTick: TickDeltaStats;
     raf: TickDeltaStats;
   };
+  /** Screen-space motion uniformity: per-frame playhead X displacement. */
+  motion: {
+    dx: TickDeltaStats;
+    pxPerTick: number;
+    /** 3.6667 at 120Hz×440tps → what a uniform motion would produce. */
+    theoryDXPerFrame: number;
+  };
   monotonic: {
     playhead: boolean;
     scroll: boolean;
@@ -87,6 +102,8 @@ export interface TickStreamSnapshot {
     note: boolean;
     playheadX: boolean;
   };
+  /** Presentation clock internals (velocity / calibration / tracking err). */
+  present: { velocity: number; calibSpanMs: number; calibN: number; err: number };
   /** true if browser-reported fps < 110 with display 120 (visual frame dropping). */
   frameDropHint: boolean;
   notes: string[];
@@ -95,6 +112,8 @@ export interface TickStreamSnapshot {
 export class TickStream {
   private recs: TickRecord[] = [];
   private cap: number;
+  /** Presentation internals injected each frame (velocity, calibration). */
+  presentInt: { velocity: number; calibSpanMs: number; calibN: number; err: number } | null = null;
 
   constructor(cap = 480) {
     this.cap = cap;
@@ -135,6 +154,12 @@ export class TickStream {
         },
         monotonic: { playhead: true, scroll: true, grid: true, note: true, playheadX: true },
         frameDropHint: false, notes: [],
+        motion: {
+          dx: emptyStats(),
+          pxPerTick: 0,
+          theoryDXPerFrame: 0,
+        },
+        present: { velocity: 0, calibSpanMs: 0, calibN: 0, err: 0 },
       };
     }
 
@@ -151,6 +176,17 @@ export class TickStream {
     // scroll is meaningful while playing; during paused/idle it is flat (ok).
     const scrollDelta = this.deltaStats('scrollTick');
     const rafStats = rafS;
+
+    // Screen-space motion uniformity: deltas of the playhead X (CSS px).
+    const dxVals: number[] = [];
+    for (let i = 1; i < this.recs.length; i++) {
+      const d = this.recs[i].playheadX - this.recs[i - 1].playheadX;
+      if (Number.isFinite(d)) dxVals.push(d);
+    }
+    const dxS = summarize(dxVals);
+    const theoryDXPerFrame = last.pxPerTick != null && last.pxPerTick > 0
+      ? (last.pxPerTick * 440 / 120) // 440 ticks/s at 120fps
+      : 0;
 
     const dts = {
       audioTick: audioDelta,
@@ -200,7 +236,18 @@ export class TickStream {
       uploadBytes: last.uploadBytes,
       visible: last.visible,
       deltas: dts,
+      motion: {
+        dx: dxS,
+        pxPerTick: last.pxPerTick ?? 0,
+        theoryDXPerFrame,
+      },
       monotonic,
+      present: {
+        velocity: this.presentInt?.velocity ?? 0,
+        calibSpanMs: this.presentInt?.calibSpanMs ?? 0,
+        calibN: this.presentInt?.calibN ?? 0,
+        err: this.presentInt?.err ?? 0,
+      },
       frameDropHint,
       notes,
     };
@@ -225,13 +272,24 @@ export class TickStream {
 }
 
 function emptyStats(): TickDeltaStats {
-  return { num: 0, avg: 0, min: 0, max: 0, p1: 0, p99: 0, maxJump: 0, medianStep: 0 };
+  return { num: 0, avg: 0, min: 0, max: 0, p1: 0, p99: 0, std: 0, maxPosDev: 0, maxNegDev: 0, maxJump: 0, medianStep: 0 };
 }
 
 function summarize(vals: number[]): TickDeltaStats {
   if (vals.length === 0) return emptyStats();
   const sorted = [...vals].sort((a, b) => a - b);
   const sum = sorted.reduce((a, b) => a + b, 0);
+  const avg = sum / vals.length;
+  // population std
+  let ss = 0;
+  for (const v of vals) { const d = v - avg; ss += d * d; }
+  const std = Math.sqrt(ss / vals.length);
+  let maxPosDev = 0, maxNegDev = 0;
+  for (const v of vals) {
+    const dev = v - avg;
+    if (dev > maxPosDev) maxPosDev = dev;
+    if (dev < maxNegDev) maxNegDev = dev;
+  }
   let maxJump = 0;
   for (let i = 1; i < vals.length; i++) {
     const j = Math.abs(vals[i] - vals[i - 1]);
@@ -239,11 +297,14 @@ function summarize(vals: number[]): TickDeltaStats {
   }
   return {
     num: vals.length,
-    avg: sum / vals.length,
+    avg,
     min: sorted[0],
     max: sorted[sorted.length - 1],
     p1: sorted[Math.max(0, Math.floor(0.01 * (sorted.length - 1)))],
     p99: sorted[Math.min(sorted.length - 1, Math.floor(0.99 * (sorted.length - 1)))],
+    std,
+    maxPosDev,
+    maxNegDev,
     maxJump,
     medianStep: sorted[Math.floor(sorted.length / 2)],
   };

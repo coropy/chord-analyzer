@@ -689,6 +689,7 @@ export function mount(root: HTMLElement): void {
         visualTick = playheadTick;
         present.reset();
       }
+      stream.presentInt = present.internals();
     }
     // Karaoke follow: drive the camera only during active playback so the
     // view doesn't fight the user's manual pan/zoom when idle or stopped.
@@ -717,6 +718,7 @@ export function mount(root: HTMLElement): void {
         cpuMs: renderer.cpuUpdateMs,
         uploadBytes: renderer.lastUploadBytes,
         visible: renderer.lastVisible,
+        pxPerTick: camera.pxPerTick,
       });
     }
 
@@ -766,6 +768,9 @@ export function mount(root: HTMLElement): void {
       `Δtick avg/max/p1/p99 ${dFmt(dt.audioTick)}` +
       ` · Δscroll ${dFmt(dt.scrollTick)}` +
       ` · Δraf ${dFmt(dt.raf)}` +
+      ` · ΔX mean ${snap.motion.dx.avg.toFixed(3)} std ${snap.motion.dx.std.toFixed(3)} min ${snap.motion.dx.min.toFixed(3)} max ${snap.motion.dx.max.toFixed(3)} p99 ${snap.motion.dx.p99.toFixed(3)}` +
+      ` · theo ${snap.motion.theoryDXPerFrame.toFixed(3)}px @${snap.motion.pxPerTick.toFixed(3)}ppt` +
+      ` · pc v ${snap.present.velocity.toFixed(4)}±${snap.present.calibSpanMs.toFixed(0)}ms${snap.present.calibN} err ${snap.present.err.toFixed(4)}` +
       (bb ? ` · ${bb.bar}/${bb.beat}` : '') +
       (snap.frameDropHint ? ' · ⚠ frame-drop' : '') +
       (snap.notes.length ? ' · ' + snap.notes.join(' · ') : '');
