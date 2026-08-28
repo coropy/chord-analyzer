@@ -1,44 +1,55 @@
 :root { color-scheme: dark; }
 * { box-sizing: border-box; }
-html, body { margin: 0; height: 100%; background: #0b0f14; color: #dfe6ee;
+html, body { margin: 0; height: 100%; background: #0e0e10; color: #dcdcdc;
   font: 13px/1.4 system-ui, "Segoe UI", sans-serif; overflow: hidden; }
 #app { height: 100%; }
 #wrap { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 
 #topbar { display: flex; align-items: center; gap: 10px; padding: 7px 12px;
-  background: #151a21; border-bottom: 1px solid #232a33; flex-wrap: wrap; }
-.brand { font-weight: 700; color: #7fc1ff; }
+  background: #161618; border-bottom: 1px solid #242426; flex-wrap: wrap; }
+.brand { font-weight: 700; color: #f0f0f0; }
 #topbar button { background: #2d6cff; color: #fff; border: 0; border-radius: 5px;
   padding: 6px 12px; font-weight: 600; cursor: pointer; }
 #topbar button:disabled { opacity: 0.45; cursor: default; }
-.btn-file { display: inline-flex; align-items: center; gap: 6px; background: #223042;
-  color: #cfe6ff; border: 1px solid #2c4456; border-radius: 5px; padding: 4px 10px;
+.btn-file { display: inline-flex; align-items: center; gap: 6px; background: #2a3a52;
+  color: #ffffff; border: 1px solid #3a4d6b; border-radius: 5px; padding: 4px 10px;
   cursor: pointer; font-size: 12px; font-weight: 600; }
-.btn-file:hover { background: #2a3d52; }
+.btn-file:hover { background: #334a68; }
 .btn-file input[type=file] { display: none; }
-#loadStatus { color: #7fb4e8; font-size: 12px; }
-.sep { width: 1px; height: 20px; background: #2c3440; }
-label { display: inline-flex; align-items: center; gap: 6px; color: #a9b7c6; }
-select { background: #1a2029; color: #dfe6ee; border: 1px solid #2c3440; border-radius: 4px; padding: 3px 6px; }
-#pos { font-variant-numeric: tabular-nums; color: #8fd0ff; }
-#fps, #fr, #cpu, #gpu, #vis, #raf { font-variant-numeric: tabular-nums; color: #9db5c9; }
-#undoBtn, #redoBtn { background: #3a4250; }
-#keyhint { color: #7b8898; font-size: 12px; }
-.keyhint { color: #7b8898; }
+#loadStatus { color: #9a9a9e; font-size: 12px; }
+.sep { width: 1px; height: 20px; background: #2c2c2e; }
+label { display: inline-flex; align-items: center; gap: 6px; color: #a8a8aa; }
+select { background: #1b1b1d; color: #e0e0e0; border: 1px solid #333335; border-radius: 4px; padding: 3px 6px; }
+#pos { font-variant-numeric: tabular-nums; color: #cfcfcf; }
+#fps, #fr, #cpu, #gpu, #vis, #raf { font-variant-numeric: tabular-nums; color: #a0a0a2; }
+#undoBtn, #redoBtn { background: #3a3a3c; }
+#keyhint { color: #7d7d80; font-size: 12px; }
+.keyhint { color: #7d7d80; }
 
-#debugbar { display: flex; gap: 18px; padding: 3px 12px; background: #0d1117;
-  border-bottom: 1px solid #1c232c; font-size: 11px; color: #8fa3b8;
+#debugbar { display: flex; gap: 18px; padding: 3px 12px; background: #101012;
+  border-bottom: 1px solid #202022; font-size: 11px; color: #909094;
   font-variant-numeric: tabular-nums; }
-#debugbar .dbg { color: #8fa3b8; }
+#debugbar .dbg { color: #909094; }
 
 #stage { flex: 1; display: flex; min-height: 0; }
-#pianoWrap { width: 52px; border-right: 1px solid #232a33; background: #0c1620; }
+#pianoWrap { width: 52px; border-right: 1px solid #242426; background: #0d0d0e; }
 #piano { display: block; }
 #timelineWrap { flex: 1; position: relative; min-width: 0; }
-#gl { position: absolute; inset: 0; display: block; background: #08131b; }
+#gl { position: absolute; inset: 0; display: block; background: #0a0a0b; }
 #overlay { position: absolute; inset: 0; pointer-events: none; display: block; }
 
+/* ---- custom scrollbars ---- */
+.sb { position: absolute; z-index: 3; pointer-events: none; opacity: 0;
+  transition: opacity 120ms ease; background: rgba(255,255,255,0.04); }
+#timelineWrap.bars-hover .sb.visible { opacity: 1; }
+.sb-h { left: 0; right: 4px; bottom: 0; height: 10px; }
+.sb-v { top: 0; bottom: 4px; right: 0; width: 10px; }
+.sb-thumb { position: absolute; background: #3a3a3e; border-radius: 5px; pointer-events: auto; }
+.sb-thumb:hover, .sb.dragging .sb-thumb { background: #888; }
+.sb-h .sb-thumb { top: 2px; bottom: 2px; left: 0; min-width: 24px; }
+.sb-v .sb-thumb { left: 2px; right: 2px; top: 0; min-height: 24px; }
+
 #trackbar { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 6px 12px;
-  background: #11161d; border-top: 1px solid #232a33; align-items: center; }
+  background: #131315; border-top: 1px solid #242426; align-items: center; }
 .trackRow { display: inline-flex; align-items: center; gap: 5px; }
-.trackRow input { accent-color: #7fc1ff; }
+.trackRow input { accent-color: #2d6cff; }

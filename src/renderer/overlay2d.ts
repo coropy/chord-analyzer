@@ -28,18 +28,18 @@ export interface OverlayTheme {
 }
 
 export const defaultTheme: OverlayTheme = {
-  barLine: 'rgba(120,210,255,0.60)',
-  beatLine: 'rgba(120,210,255,0.28)',
-  divLine: 'rgba(120,210,255,0.12)',
-  barText: 'rgba(210,235,255,0.95)',
-  playhead: 'rgba(255,90,95,0.95)',
+  barLine: 'rgba(255,255,255,0.32)',
+  beatLine: 'rgba(255,255,255,0.16)',
+  divLine: 'rgba(255,255,255,0.08)',
+  barText: 'rgba(230,230,230,0.90)',
+  playhead: 'rgba(255,255,255,0.95)',
   octaveLine: 'rgba(255,255,255,0.10)',
-  keyBg: '#0c1620',
-  whiteKey: '#e9eef5',
-  blackKey: '#11161d',
-  marker: 'rgba(255,214,120,0.95)',
+  keyBg: '#0d0d0e',
+  whiteKey: '#eceff4',
+  blackKey: '#141416',
+  marker: 'rgba(200,200,200,0.95)',
   markerSelected: 'rgba(255,255,255,1)',
-  region: 'rgba(120,210,120,0.18)',
+  region: 'rgba(255,255,255,0.10)',
 };
 
 export interface VisibleRange { left: number; right: number; }

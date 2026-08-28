@@ -79,7 +79,11 @@ export function mount(root: HTMLElement): void {
       </div>
       <div id="stage">
         <div id="pianoWrap"><canvas id="piano"></canvas></div>
-        <div id="timelineWrap"><canvas id="gl"></canvas><canvas id="overlay"></canvas></div>
+        <div id="timelineWrap">
+          <canvas id="gl"></canvas><canvas id="overlay"></canvas>
+          <div id="sbV" class="sb sb-v"><div id="sbVT" class="sb-thumb"></div></div>
+          <div id="sbH" class="sb sb-h"><div id="sbHT" class="sb-thumb"></div></div>
+        </div>
       </div>
       <div id="trackbar"></div>
     </div>`;
@@ -111,6 +115,11 @@ export function mount(root: HTMLElement): void {
   const quantToggle = $<HTMLInputElement>('quantToggle');
   const quantSel = $<HTMLSelectElement>('quantSel');
   const gridSel = $<HTMLSelectElement>('gridSel');
+  const sbV = $<HTMLElement>('sbV');
+  const sbH = $<HTMLElement>('sbH');
+  const sbVT = $<HTMLElement>('sbVT');
+  const sbHT = $<HTMLElement>('sbHT');
+  const timelineWrap = $<HTMLElement>('timelineWrap');
 
   const PIANO_W = 52;
   const applySize = (): void => {
@@ -130,7 +139,7 @@ export function mount(root: HTMLElement): void {
 
   const gl = glCanvas.getContext('webgl2', { antialias: true, alpha: false });
   if (!gl) { playBtn.textContent = 'No WebGL2'; return; }
-  gl.clearColor(0.08, 0.085, 0.11, 1);
+  gl.clearColor(0.04, 0.04, 0.04, 1);
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   const renderer = new WebGL2NoteRenderer(gl);
@@ -152,6 +161,93 @@ export function mount(root: HTMLElement): void {
 
   const renderView = (): RenderView =>
     ({ scrollStartTick: camera.scrollTick, pxPerTick: camera.pxPerTick, topPitch: camera.topPitch, pxPerPitch: camera.pxPerPitch, viewportWidth: glCanvas.width, viewportHeight: glCanvas.height });
+
+  // ---- custom scrollbars ----
+  const SCROLLBAR_PX = 16;
+  function updateScrollbars(): void {
+    const H = glCanvas.height, W = glCanvas.width;
+    if (!model) { sbH.classList.remove('visible'); sbV.classList.remove('visible'); return; }
+    // horizontal: raw scroll range in ticks
+    const mT = tickMargin();
+    const hLo = model.minTick - mT;
+    const hHi = model.maxTick + mT;
+    const hSpan = Math.max(1e-6, hHi - hLo);
+    const hVisible = W / camera.pxPerTick;
+    const hMovable = hSpan - hVisible;
+    const hCan = hMovable > 1e-3 && hVisible < hSpan;
+    const hTrack = sbH.clientWidth;
+    const hThumb = hCan ? Math.max(SCROLLBAR_PX, hTrack * (hVisible / hSpan)) : 0;
+    const hFrac = hCan ? (camera.scrollTick - hLo) / hMovable : 0;
+    sbHT.style.left = (hFrac * Math.max(0, hTrack - hThumb)) + 'px';
+    sbHT.style.width = hThumb + 'px';
+    sbH.classList.toggle('visible', hCan);
+    // vertical: pitch scroll range
+    const vLo = pitchMin - PITCH_MARGIN;
+    const vHi = pitchMax + PITCH_MARGIN;
+    const vSpan = Math.max(1e-6, vHi - vLo);
+    const vVisible = H / camera.pxPerPitch;
+    const vMovable = vSpan - vVisible;
+    const vCan = vMovable > 1e-3 && vVisible < vSpan;
+    const vH = sbV ? sbV.clientHeight : 0;
+    const vThumb = vCan ? Math.max(SCROLLBAR_PX, vH * (vVisible / vSpan)) : 0;
+    const vMinTop = vLo + H / camera.pxPerPitch;
+    const vFrac = vCan ? (camera.topPitch - vMinTop) / vMovable : 0;
+    sbVT.style.top = (vFrac * Math.max(0, vH - vThumb)) + 'px';
+    sbVT.style.height = vThumb + 'px';
+    sbV.classList.toggle('visible', vCan);
+  }
+  let dragVm: 'h' | 'v' | null = null;
+  let dragStartClient = 0;
+  let dragAnchorCam = 0;
+  function beginDrag(axis: 'h' | 'v', e: PointerEvent): void {
+    // Anchor at thumb position: store thumb client pos and current camera value
+    dragVm = axis;
+    if (axis === 'h') {
+      dragStartClient = sbHT.getBoundingClientRect().left;
+      dragAnchorCam = camera.scrollTick;
+    } else {
+      dragStartClient = sbVT.getBoundingClientRect().top;
+      dragAnchorCam = camera.topPitch;
+    }
+    timelineWrap.classList.add('dragging');
+    timelineWrap.setPointerCapture(e.pointerId);
+  }
+  function beginFromOffsetOrJump(delta: number, axis: 'h' | 'v'): void {
+    if (axis === 'h') {
+      const trackW = sbH.clientWidth - sbHT.clientWidth;
+      const mT = tickMargin(), hLo = model.minTick - mT, hHi = model.maxTick + mT;
+      const hSpan = Math.max(1e-6, hHi - hLo), hVisible = glCanvas.width / camera.pxPerTick;
+      const hMovable = Math.max(1e-6, hSpan - hVisible);
+      const s = dragAnchorCam + delta * (hMovable / Math.max(1, trackW));
+      camera = clampScroll({ ...camera, scrollTick: s });
+    } else {
+      const trackH = sbV.clientHeight - sbVT.clientHeight;
+      const vLo = pitchMin - PITCH_MARGIN, vHi = pitchMax + PITCH_MARGIN;
+      const vSpan = Math.max(1e-6, vHi - vLo), vVisible = glCanvas.height / camera.pxPerPitch;
+      const vMovable = Math.max(1e-6, vSpan - vVisible);
+      const top = dragAnchorCam - delta * (vMovable / Math.max(1, trackH));
+      camera = clampPitch({ ...camera, topPitch: top });
+    }
+  }
+  // Drag directly on the thumb (which is pointer-events:auto)
+  sbHT.addEventListener('pointerdown', (e) => { if (!sbH.classList.contains('visible')) return; e.stopPropagation(); beginDrag('h', e); });
+  sbVT.addEventListener('pointerdown', (e) => { if (!sbV.classList.contains('visible')) return; e.stopPropagation(); beginDrag('v', e); });
+  window.addEventListener('pointermove', (e) => { if (dragVm) beginFromOffsetOrJump(
+    dragVm === 'h' ? e.clientX - dragStartClient : e.clientY - dragStartClient, dragVm); });
+  window.addEventListener('pointerup', () => {
+    if (!dragVm) return;
+    dragVm = null;
+    timelineWrap.classList.remove('dragging');
+  });
+  // Show bars while the mouse is over the timeline area, fade when idle
+  let hideBarTimer: ReturnType<typeof setTimeout> | null = null;
+  const revealBars = (): void => {
+    timelineWrap.classList.add('bars-hover');
+    if (hideBarTimer) clearTimeout(hideBarTimer);
+    hideBarTimer = setTimeout(() => timelineWrap.classList.remove('bars-hover'), 900);
+  };
+  timelineWrap.addEventListener('pointermove', revealBars);
+  timelineWrap.addEventListener('pointerenter', revealBars);
 
   // ---- track controls ----
   let trackCounts: number[] = [];
@@ -503,6 +599,7 @@ export function mount(root: HTMLElement): void {
       playheadTick = secondsToTick(tempoMap, audio.getPositionSeconds());
     }
     const view = renderView();
+    updateScrollbars();
     renderer.draw(model, view);
 
     const oview: CameraView = { ...camera, viewportWidth: glCanvas.width, viewportHeight: glCanvas.height };
