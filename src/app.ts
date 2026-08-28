@@ -15,7 +15,7 @@ import { buildNoteModel, type NoteModel } from './model/NoteModel';
 import { WebGL2NoteRenderer, type RenderView } from './renderer/WebGL2NoteRenderer';
 import { WavAudioSource, type AudioTimelineSource } from './audio/AudioSource';
 import { buildTempoMap, tickToSeconds, secondsToTick, tickToBarBeat, type TempoMap } from './time/timeline';
-import { gridConfig } from './time/grid';
+import { adaptiveGridConfig, barPxSpacing, gridConfig } from './time/grid';
 import { makeCamera, xToTick, yToPitch, type Camera, type CameraView } from './time/camera';
 import { drawGridAndPlayhead, drawPianoKeys, drawMarkersAndRegions } from './renderer/overlay2d';
 import { FrameTimeHistogram } from './perf/frameStats';
@@ -604,8 +604,9 @@ export function mount(root: HTMLElement): void {
 
     const oview: CameraView = { ...camera, viewportWidth: glCanvas.width, viewportHeight: glCanvas.height };
     const range = { left: oview.scrollTick, right: oview.scrollTick + oview.viewportWidth / oview.pxPerTick };
-    const grid = gridConfig(4, 2, ppq, gridDiv);
-    drawGridAndPlayhead(oCtx, oview, grid, range, playheadTick);
+    const grid = adaptiveGridConfig(gridConfig(4, 2, ppq, gridDiv), oview.pxPerTick);
+    const showBarText = barPxSpacing(grid, oview.pxPerTick) >= 90;
+    drawGridAndPlayhead(oCtx, oview, grid, range, playheadTick, undefined, showBarText);
     drawMarkersAndRegions(oCtx, oview, engine.markers, regions, engine.selectedId);
     if (pCtx) drawPianoKeys(piano, oview);
 

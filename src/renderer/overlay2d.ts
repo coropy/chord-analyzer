@@ -55,6 +55,7 @@ export function drawGridAndPlayhead(
   range: VisibleRange,
   playheadTick: number,
   theme: OverlayTheme = defaultTheme,
+  showBarText = true,
 ): void {
   ctx.clearRect(0, 0, view.viewportWidth, view.viewportHeight);
 
@@ -70,7 +71,7 @@ export function drawGridAndPlayhead(
     ctx.moveTo(x, 0);
     ctx.lineTo(x, view.viewportHeight);
     ctx.stroke();
-    if (l.kind === 'bar') {
+    if (l.kind === 'bar' && showBarText) {
       ctx.fillStyle = theme.barText;
       ctx.font = '10px system-ui';
       ctx.fillText(String(l.bar), x + 3, 12);

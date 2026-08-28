@@ -30,6 +30,24 @@ export function gridConfig(numerator = 4, denominatorPower = 2, ppq = 480, divis
   return { numerator, denominatorPower, ppq, divisionsPerBar };
 }
 
+/**
+ * Coarsen the grid sub-divisions so that adjacent lines stay >= `minDivPx`
+ * apart at the given zoom. Steps double (bar/2, bar/4, ...) but never coarser
+ * than one bar. Bar/beat-level lines are not subdivided further.
+ */
+export function adaptiveGridConfig(base: GridConfig, pxPerTick: number, minDivPx = 26): GridConfig {
+  const ticksPerBar = barTickSpan(base);
+  let divStep = Math.max(1, Math.round(ticksPerBar / Math.max(1, base.divisionsPerBar)));
+  while (divStep * pxPerTick < minDivPx && divStep < ticksPerBar) divStep *= 2;
+  const effectiveDiv = Math.max(1, Math.round(ticksPerBar / divStep));
+  return { ...base, divisionsPerBar: effectiveDiv };
+}
+
+/** Pixel spacing of one bar at the given zoom. */
+export function barPxSpacing(g: GridConfig, pxPerTick: number): number {
+  return barTickSpan(g) * pxPerTick;
+}
+
 /** Ticks per bar for the config. */
 export function barTickSpan(g: GridConfig): number {
   return g.ppq * g.numerator;
