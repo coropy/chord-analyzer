@@ -20,7 +20,6 @@ import { makeCamera, tickToX, xToTick, yToPitch, type Camera, type CameraView } 
 import { PresentationClock } from './time/presentationClock';
 import { drawGridAndPlayhead, drawPianoKeys, drawMarkersAndRegions } from './renderer/overlay2d';
 import { FrameTimeHistogram } from './perf/frameStats';
-import { startRafProbe } from './perf/rafDiagnostic';
 import { TickStream, type TickStreamSnapshot } from './perf/tickStream';
 import { buildRegions, type Marker, type ChordRegion, type QuantizeLayout } from './marker/marker';
 import { CommandEngine } from './marker/history';
@@ -35,25 +34,26 @@ export function mount(root: HTMLElement): void {
   root.innerHTML = `
     <div id="wrap">
       <div id="topbar">
-        <span class="brand">Chord Analyzer — Timeline</span>
-        <label class="btn-file">♪ MIDI (.mid)
+        <span class="brand tag">Chord Analyzer — Timeline</span>
+        <label class="btn-file fileMidi tag" title="MIDI ファイルを開く (.mid)">
+          <svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
           <input type="file" id="midiFile" accept=".mid,.midi,.smf,audio/midi,audio/x-midi" />
         </label>
-        <label class="btn-file">♫ 音声 (WAV/MP3)
+        <label class="btn-file fileAudio tag" title="音声ファイルを開く (WAV/MP3)">
+          <svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>
           <input type="file" id="audioFile" accept=".wav,.mp3,.ogg,.flac,.m4a,audio/*" />
         </label>
-        <span class="sep"></span>
-        <span id="loadStatus">MIDI / 音声ファイルを選択してください</span>
-        <span class="sep"></span>
-        <button id="playBtn" disabled>▶ Play</button>
-        <button id="stopBtn" disabled>■ Stop</button>
-        <span id="pos">0.000s / 0.000s</span>
-        <span class="sep"></span>
-        <label>Grid <select id="gridSel">
+        <span id="pos" class="tag">0.000s / 0.000s</span>
+        <span id="barbeat" class="tag">—</span>
+        <button id="playBtn" class="iconBtn playBtn tag" disabled title="再生 / 一時停止">
+          <svg id="icoPlay" viewBox="0 0 24 24"><path d="M9 5v14l9-7z"/></svg>
+          <svg id="icoPause" class="hide" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+        </button>
+        <label class="tag gridWrap">Grid <select id="gridSel">
           <option value="4">1/4</option><option value="8" selected>1/8</option>
           <option value="16">1/16</option><option value="32">1/32</option>
         </select></label>
-        <label>Quantize
+        <label class="tag quantWrap">Quantize
           <input type="checkbox" id="quantToggle" checked />
           <select id="quantSel">
             <option value="bar/8" selected>1 bar / 8</option>
@@ -63,17 +63,31 @@ export function mount(root: HTMLElement): void {
             <option value="1/32">1/32</option>
           </select>
         </label>
-        <span class="sep"></span>
-        <button id="undoBtn" disabled>↶ Undo</button>
-        <button id="redoBtn" disabled>↷ Redo</button>
-        <span class="sep"></span>
-        <span class="keyhint">Enter=Marker · Del=Delete · Space=Play · ←→=nudge · Ctrl+Z=Undo</span>
-        <span id="raf">rAF —</span>
-        <span id="fps">— FPS</span>
-        <span id="fr">— ms</span>
-        <span id="cpu">cpu —</span>
-        <span id="gpu">gpu —</span>
-        <span id="vis">vis —</span>
+        <button id="undoBtn" class="iconBtn tag" disabled title="元に戻す (Ctrl+Z)">
+          <svg viewBox="0 0 24 24"><path d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z"/></svg>
+        </button>
+        <button id="redoBtn" class="iconBtn tag" disabled title="やり直す (Ctrl+Shift+Z)">
+          <svg viewBox="0 0 24 24"><path d="M18.4 10.6C16.55 8.99 14.15 8 11.5 8c-4.65 0-8.58 3.03-9.96 7.22l2.37.78C5.95 12.86 8.96 11 12.5 11c1.96 0 3.73.72 5.12 1.88L14 16.5h9v-9l-4.6 3.1z"/></svg>
+        </button>
+        <button id="menuBtn" class="menuBtn tag">☰ メニュー</button>
+        <div id="menu">
+          <div class="menu-section">
+            <div class="menu-title">表示</div>
+            <label class="menu-row"><input type="checkbox" id="debugToggle" />デバッグ情報を表示</label>
+          </div>
+          <div class="menu-section">
+            <div class="menu-title">チャンネル / トラック</div>
+            <div class="menu-tools">
+              <button id="trackAllOn" class="miniBtn" disabled>全ON</button>
+              <button id="trackAllOff" class="miniBtn" disabled>全OFF</button>
+            </div>
+            <div id="trackbar" class="menu-tracks"></div>
+          </div>
+          <div class="menu-section">
+            <div class="menu-title">ショートカット</div>
+            <div class="keyhint">Enter=Marker · Del=Delete · Space=Play · ←→=nudge · Ctrl+Z=Undo</div>
+          </div>
+        </div>
       </div>
       <div id="debugbar">
         <span class="dbg" id="dbgRaw">raw —</span>
@@ -85,33 +99,35 @@ export function mount(root: HTMLElement): void {
         <div id="pianoWrap"><canvas id="piano"></canvas></div>
         <div id="timelineWrap">
           <canvas id="gl"></canvas><canvas id="overlay"></canvas>
+          <div id="fpsOverlay">— FPS</div>
           <div id="sbV" class="sb sb-v"><div id="sbVT" class="sb-thumb"></div></div>
           <div id="sbH" class="sb sb-h"><div id="sbHT" class="sb-thumb"></div></div>
         </div>
       </div>
-      <div id="trackbar"></div>
     </div>`;
 
   const $ = <T extends HTMLElement>(id: string): T => root.querySelector('#' + id) as T;
   const midiInput = $<HTMLInputElement>('midiFile');
   const audioInput = $<HTMLInputElement>('audioFile');
-  const loadStatus = $<HTMLElement>('loadStatus');
   const playBtn = $<HTMLButtonElement>('playBtn');
-  const stopBtn = $<HTMLButtonElement>('stopBtn');
+  const icoPlay = $<HTMLElement>('icoPlay');
+  const icoPause = $<HTMLElement>('icoPause');
   const undoBtn = $<HTMLButtonElement>('undoBtn');
   const redoBtn = $<HTMLButtonElement>('redoBtn');
   const posEl = $<HTMLElement>('pos');
+  const barbeatEl = $<HTMLElement>('barbeat');
   const glCanvas = $<HTMLCanvasElement>('gl');
   const overlay = $<HTMLCanvasElement>('overlay');
   const piano = $<HTMLCanvasElement>('piano');
   const trackbar = $<HTMLElement>('trackbar');
+  const debugbar = $<HTMLElement>('debugbar');
+  const menu = $<HTMLElement>('menu');
+  const menuBtn = $<HTMLButtonElement>('menuBtn');
+  const debugToggle = $<HTMLInputElement>('debugToggle');
+  const trackAllOn = $<HTMLButtonElement>('trackAllOn');
+  const trackAllOff = $<HTMLButtonElement>('trackAllOff');
   const stage = $<HTMLElement>('stage');
-  const fpsEl = $<HTMLElement>('fps');
-  const frEl = $<HTMLElement>('fr');
-  const cpuEl = $<HTMLElement>('cpu');
-  const gpuEl = $<HTMLElement>('gpu');
-  const visEl = $<HTMLElement>('vis');
-  const rafEl = $<HTMLElement>('raf');
+  const fpsOverlay = $<HTMLElement>('fpsOverlay');
   const dbgRaw = $<HTMLElement>('dbgRaw');
   const dbgQuant = $<HTMLElement>('dbgQuant');
   const dbgAudio = $<HTMLElement>('dbgAudio');
@@ -151,13 +167,12 @@ export function mount(root: HTMLElement): void {
   window.addEventListener('resize', applySize);
 
   const gl = glCanvas.getContext('webgl2', { antialias: true, alpha: false });
-  if (!gl) { playBtn.textContent = 'No WebGL2'; return; }
+  if (!gl) { console.error('WebGL2 not supported'); return; }
   gl.clearColor(0.04, 0.04, 0.04, 1);
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   const renderer = new WebGL2NoteRenderer(gl);
   const hist = new FrameTimeHistogram(360);
-  const probe = startRafProbe();
   const stream = new TickStream(480);
 
   let model: NoteModel;
@@ -269,29 +284,63 @@ export function mount(root: HTMLElement): void {
 
   // ---- track controls ----
   let trackCounts: number[] = [];
+  function applyTrackVisibility(): void {
+    renderer.setTrackVisibility([...trackVisible]);
+  }
   function renderTracks(n: number): void {
     trackbar.innerHTML = '';
     for (let i = 0; i < n; i++) {
       const label = document.createElement('label');
       label.className = 'trackRow';
       const cb = document.createElement('input');
-      cb.type = 'checkbox'; cb.checked = true;
+      cb.type = 'checkbox'; cb.checked = trackVisible[i] ?? true;
       const span = document.createElement('span');
       span.textContent = `T${i} · ${trackCounts[i] ?? 0} notes`;
       cb.addEventListener('change', () => {
         trackVisible[i] = cb.checked;
-        renderer.setTrackVisibility([...trackVisible]);
+        applyTrackVisibility();
       });
       label.append(cb, span);
       trackbar.appendChild(label);
     }
+    trackAllOn.disabled = n === 0;
+    trackAllOff.disabled = n === 0;
   }
+  trackAllOn.addEventListener('click', () => {
+    trackVisible = trackVisible.map(() => true);
+    renderTracks(trackVisible.length);
+    applyTrackVisibility();
+  });
+  trackAllOff.addEventListener('click', () => {
+    trackVisible = trackVisible.map(() => false);
+    renderTracks(trackVisible.length);
+    applyTrackVisibility();
+  });
+
+  // ---- menu ----
+  // Debug bar is hidden by default; the checkbox turns it on.
+  debugbar.classList.add('hidden');
+  menuBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    menu.classList.toggle('open');
+  });
+  debugToggle.addEventListener('change', () => {
+    debugbar.classList.toggle('hidden', !debugToggle.checked);
+    applySize();
+  });
+  document.addEventListener('click', (e) => {
+    if (menu.classList.contains('open') && !menu.contains(e.target as Node)) {
+      menu.classList.remove('open');
+    }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && menu.classList.contains('open')) menu.classList.remove('open');
+  });
 
   // ---- load data from selected MIDI + audio ----
-  let audioReady = false;
 
   /** Build notes + display from a MIDI buffer. Independent of audio. */
-  function buildMidi(buffer: ArrayBuffer, label: string): void {
+  function buildMidi(buffer: ArrayBuffer): void {
     try {
       const doc = parseMidi(new Uint8Array(buffer));
       tempoMap = buildTempoMap(doc);
@@ -326,30 +375,22 @@ export function mount(root: HTMLElement): void {
         pxPerPitch: pxPerPitchFull,
       });
       camera = clampScroll(clampPitch(camera));
-      loadStatus.textContent = `${label} · ${doc.notes.length} notes / ${doc.tracks.length} tracks` + (audioReady ? '' : ' · 音声未選択');
     } catch (err) {
       console.error(err);
-      loadStatus.textContent = 'MIDIエラー: ' + (err instanceof Error ? err.message : String(err));
     }
   }
 
   /** Decode audio and enable playback. Independent of MIDI. */
-  async function loadAudio(buffer: ArrayBuffer, label: string): Promise<void> {
+  async function loadAudio(buffer: ArrayBuffer): Promise<void> {
     try {
       audio = new WavAudioSource(buffer);
       await audio.load();
-      audio.onEnded = () => { playBtn.textContent = '▶ Play'; };
+      audio.onEnded = () => setPaused();
       playBtn.disabled = false;
-      stopBtn.disabled = false;
-      audioReady = true;
-      loadStatus.textContent = (midiStatusLabel ?? 'MIDI未選択') + ` × ${label}`;
     } catch (err) {
       console.error(err);
-      loadStatus.textContent = '音声エラー: ' + (err instanceof Error ? err.message : String(err));
     }
   }
-  let midiStatusLabel: string | null = null;
-
   async function fileToBuffer(file: File): Promise<ArrayBuffer> {
     return await file.arrayBuffer();
   }
@@ -358,30 +399,41 @@ export function mount(root: HTMLElement): void {
     const f = midiInput.files?.[0];
     if (!f) return;
     const buf = await fileToBuffer(f);
-    midiStatusLabel = f.name;
-    buildMidi(buf, f.name);
+    buildMidi(buf);
   });
 
   audioInput.addEventListener('change', async () => {
     const f = audioInput.files?.[0];
     if (!f) return;
     const buf = await fileToBuffer(f);
-    void loadAudio(buf, f.name);
+    void loadAudio(buf);
   });
 
   // Playback is only enabled once the user picks both files via the buttons.
   // No default files are auto-loaded; the user selects every time.
 
   // ---- playback ----
+  function setPaused(): void {
+    icoPlay.classList.remove('hide');
+    icoPause.classList.add('hide');
+    playBtn.title = '再生';
+  }
+  function setPlaying(): void {
+    icoPlay.classList.add('hide');
+    icoPause.classList.remove('hide');
+    playBtn.title = '一時停止';
+  }
   playBtn.addEventListener('click', () => {
     if (!audio?.loaded) return;
-    if (audio.playing) { audio.pause(); playBtn.textContent = '▶ Play'; }
-    else { audio.play(); playBtn.textContent = 'Ⅱ Pause'; }
+    if (audio.playing) { audio.pause(); setPaused(); }
+    else { audio.play(); setPlaying(); }
   });
-  stopBtn.addEventListener('click', () => {
-    audio?.stop();
+  // Click again while playing = stop (back to start).
+  playBtn.addEventListener('dblclick', () => {
+    if (!audio?.loaded) return;
+    audio.stop();
     playheadTick = 0;
-    playBtn.textContent = '▶ Play';
+    setPaused();
   });
 
   function seekToTick(tick: number): void {
@@ -672,7 +724,6 @@ export function mount(root: HTMLElement): void {
     const ms = now - lastNow; lastNow = now;
     hist.push(ms);
     const st = hist.computeStats();
-    const rstat = probe.stats();
 
     if (!model || !tempoMap) { requestAnimationFrame(frame); return; }
 
@@ -739,13 +790,10 @@ export function mount(root: HTMLElement): void {
     if (pCtx) drawPianoKeys(piano, oview);
 
     const sec = tempoMap ? tickToSeconds(tempoMap, playheadTick) : 0;
+    const bb = tempoMap ? tickToBarBeat(playheadTick, ppq, 4, 2) : null;
     posEl.textContent = sec.toFixed(3) + 's / ' + (tempoMap?.durationSeconds ?? 0).toFixed(3) + 's';
-    fpsEl.textContent = st.avgFps.toFixed(0) + ' FPS';
-    frEl.textContent = st.avgMs.toFixed(2) + ' ms';
-    cpuEl.textContent = 'cpu ' + renderer.cpuUpdateMs.toFixed(3);
-    gpuEl.textContent = 'gpu ' + renderer.drawMs.toFixed(3);
-    visEl.textContent = 'vis ' + renderer.lastVisible;
-    rafEl.textContent = 'rAF ' + (rstat.observedHz > 0 ? rstat.observedHz.toFixed(0) + 'Hz' : '—') + ' · ' + rstat.notes;
+    barbeatEl.textContent = bb ? `${bb.bar}:${bb.beat}` : '—';
+    fpsOverlay.textContent = st.avgFps.toFixed(0) + ' FPS';
 
     // ---- real-time judder diagnostics on the WQXGA@120Hz panel ----
     const snap = stream.stats();
@@ -753,7 +801,6 @@ export function mount(root: HTMLElement): void {
       `a${d.avg.toFixed(2)}/m${d.max.toFixed(2)}/p1${d.p1.toFixed(2)}/p99${d.p99.toFixed(2)} j${d.maxJump.toFixed(2)}`;
     const mono = (v: boolean): string => (v ? '✓' : '✗');
     const dt = snap.deltas;
-    const bb = tempoMap ? tickToBarBeat(playheadTick, ppq, 4, 2) : null;
     const qr = quantizeTick(playheadTick, engine.layout.division, { ppq, numerator: 4 }).quantizedTick;
     dbgRaw.textContent = 'raw ' + playheadTick.toFixed(1);
     dbgQuant.textContent = 'quant ' + qr;
