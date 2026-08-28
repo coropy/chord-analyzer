@@ -16,10 +16,12 @@ import { WebGL2NoteRenderer, type RenderView } from './renderer/WebGL2NoteRender
 import { WavAudioSource, type AudioTimelineSource } from './audio/AudioSource';
 import { buildTempoMap, tickToSeconds, secondsToTick, tickToBarBeat, type TempoMap } from './time/timeline';
 import { adaptiveGridConfig, barPxSpacing, gridConfig } from './time/grid';
-import { makeCamera, xToTick, yToPitch, type Camera, type CameraView } from './time/camera';
+import { makeCamera, tickToX, xToTick, yToPitch, type Camera, type CameraView } from './time/camera';
+import { PresentationClock } from './time/presentationClock';
 import { drawGridAndPlayhead, drawPianoKeys, drawMarkersAndRegions } from './renderer/overlay2d';
 import { FrameTimeHistogram } from './perf/frameStats';
 import { startRafProbe } from './perf/rafDiagnostic';
+import { TickStream, type TickStreamSnapshot } from './perf/tickStream';
 import { buildRegions, type Marker, type ChordRegion, type QuantizeLayout } from './marker/marker';
 import { CommandEngine } from './marker/history';
 import { quantizeTick, divisionLabel, type QuantizeDivision } from './marker/quantize';
@@ -124,17 +126,26 @@ export function mount(root: HTMLElement): void {
   const timelineWrap = $<HTMLElement>('timelineWrap');
 
   const PIANO_W = 52;
+  // Logical CSS-pixel viewport (all camera math / hit-testing / scrollbars work
+  // in this space). The canvas backing stores are sized to the monitor's
+  // devicePixelRatio so rendering is natively sharp instead of a low-res
+  // upscale that reads as blur / stepped edges / doubled strokes on HiDPI and
+  // high-refresh (120Hz+) displays.
+  const dpr = (): number => window.devicePixelRatio || 1;
+  let cssW = 0, cssH = 0;
   const applySize = (): void => {
     // Measure the actual available stage area; used to be overflowing into the
     // trackbar because the canvas was sized from #wrap minus the as-yet-empty bars.
     const w = Math.max(200, stage.clientWidth - PIANO_W);
     const h = Math.max(200, stage.clientHeight);
+    cssW = w; cssH = h;
+    const d = dpr();
     for (const c of [glCanvas, overlay]) {
-      c.width = w; c.height = h;
+      c.width = Math.round(w * d); c.height = Math.round(h * d);
       c.style.width = w + 'px'; c.style.height = h + 'px';
     }
-    piano.width = PIANO_W; piano.height = h;
-    piano.style.height = h + 'px';
+    piano.width = Math.round(PIANO_W * d); piano.height = Math.round(h * d);
+    piano.style.width = PIANO_W + 'px'; piano.style.height = h + 'px';
   };
   applySize();
   window.addEventListener('resize', applySize);
@@ -147,13 +158,18 @@ export function mount(root: HTMLElement): void {
   const renderer = new WebGL2NoteRenderer(gl);
   const hist = new FrameTimeHistogram(360);
   const probe = startRafProbe();
+  const stream = new TickStream(480);
 
   let model: NoteModel;
   let tempoMap: TempoMap | null = null;
   let audio: AudioTimelineSource | null = null;
   let camera = makeCamera({ scrollTick: 0, pxPerTick: 0.2, topPitch: MIDI_MAX_PITCH + 1, pxPerPitch: 6 });
   let trackVisible: boolean[] = [];
+  /** CANONICAL playhead from the audio engine (tick). */
   let playheadTick = 0;
+  /** Continuous VISUAL playhead tick (presentation clock extrapolation). */
+  let visualTick = 0;
+  const present = new PresentationClock();
   let gridDiv = 8;
 
   // ---- Phase 4 state ----
@@ -161,13 +177,13 @@ export function mount(root: HTMLElement): void {
   let regions: ChordRegion[] = [];
   let ppq = 480;
 
-  const renderView = (): RenderView =>
-    ({ scrollStartTick: camera.scrollTick, pxPerTick: camera.pxPerTick, topPitch: camera.topPitch, pxPerPitch: camera.pxPerPitch, viewportWidth: glCanvas.width, viewportHeight: glCanvas.height });
+  const rendererView = (): RenderView =>
+    ({ scrollStartTick: camera.scrollTick, pxPerTick: camera.pxPerTick, topPitch: camera.topPitch, pxPerPitch: camera.pxPerPitch, viewportWidth: cssW, viewportHeight: cssH, dpr: dpr() });
 
   // ---- custom scrollbars ----
   const SCROLLBAR_PX = 16;
   function updateScrollbars(): void {
-    const H = glCanvas.height, W = glCanvas.width;
+    const H = cssH, W = cssW;
     if (!model) { sbH.classList.remove('visible'); sbV.classList.remove('visible'); return; }
     // horizontal: raw scroll range in ticks
     const mT = tickMargin();
@@ -218,14 +234,14 @@ export function mount(root: HTMLElement): void {
     if (axis === 'h') {
       const trackW = sbH.clientWidth - sbHT.clientWidth;
       const mT = tickMargin(), hLo = model.minTick - mT, hHi = model.maxTick + mT;
-      const hSpan = Math.max(1e-6, hHi - hLo), hVisible = glCanvas.width / camera.pxPerTick;
+      const hSpan = Math.max(1e-6, hHi - hLo), hVisible = cssW / camera.pxPerTick;
       const hMovable = Math.max(1e-6, hSpan - hVisible);
       const s = dragAnchorCam + delta * (hMovable / Math.max(1, trackW));
       camera = clampScroll({ ...camera, scrollTick: s });
     } else {
       const trackH = sbV.clientHeight - sbVT.clientHeight;
       const vLo = pitchMin - PITCH_MARGIN, vHi = pitchMax + PITCH_MARGIN;
-      const vSpan = Math.max(1e-6, vHi - vLo), vVisible = glCanvas.height / camera.pxPerPitch;
+      const vSpan = Math.max(1e-6, vHi - vLo), vVisible = cssH / camera.pxPerPitch;
       const vMovable = Math.max(1e-6, vSpan - vVisible);
       const top = dragAnchorCam - delta * (vMovable / Math.max(1, trackH));
       camera = clampPitch({ ...camera, topPitch: top });
@@ -298,7 +314,7 @@ export function mount(root: HTMLElement): void {
       // Vertical: exact fit so the highest note sits on the top edge and the
       // lowest on the bottom edge. span>0 implies pxPerPitch>0 -> no scrollbar.
       const vSpan = Math.max(1e-6, pitchMax - pitchMin);
-      const pxPerPitchFull = glCanvas.height / vSpan;
+      const pxPerPitchFull = cssH / vSpan;
       // Horizontal: 1/8-note grid division has a fixed, readable pixel width.
       // 1/8 division = one eighth-note = ppq/2 ticks in 4/4.
       const ticksPerDiv = Math.max(1, Math.round(ppq * 4 / 8));
@@ -451,13 +467,13 @@ export function mount(root: HTMLElement): void {
     // full band [min-…, max+…] that must stay reachable.
     const lo = pitchMin - PITCH_MARGIN;
     const hi = pitchMax + PITCH_MARGIN;
-    const minPx = Math.min(glCanvas.height / Math.max(1, hi - lo), MIN_PX_PER_PITCH);
+    const minPx = Math.min(cssH / Math.max(1, hi - lo), MIN_PX_PER_PITCH);
     const maxPx = MAX_PX_PER_PITCH;
     // zoom caps
     const pxCapped = Math.max(minPx, Math.min(cam.pxPerPitch, maxPx));
     if (pxCapped !== cam.pxPerPitch) cam = { ...cam, pxPerPitch: pxCapped };
     const px = cam.pxPerPitch;
-    const heightPx = glCanvas.height;
+    const heightPx = cssH;
     // Clamp scroll so the visible pitch window never leaves [lo, hi].
     // topPitch maps to y=0; bottom visible pitch = topPitch - heightPx/px.
     // Filter: lo <= bottomVisible AND topVisible <= hi
@@ -469,10 +485,10 @@ export function mount(root: HTMLElement): void {
   const clampedPxPerPitch = (px: number): number => {
     if (!model) return Math.max(px, MIN_PX_PER_PITCH);
     const lo = pitchMin - PITCH_MARGIN, hi = pitchMax + PITCH_MARGIN;
-    return Math.max(glCanvas.height / Math.max(1, hi - lo), Math.min(px, MAX_PX_PER_PITCH));
+    return Math.max(cssH / Math.max(1, hi - lo), Math.min(px, MAX_PX_PER_PITCH));
   };
   function zoomVertical(factor: number): void {
-    const cy = glCanvas.height / 2;
+    const cy = cssH / 2;
     const anchorPitch = yToPitch(camera, cy);
     const np = clampedPxPerPitch(camera.pxPerPitch * factor);
     camera = clampPitch({ ...camera, pxPerPitch: np, topPitch: anchorPitch + cy / np });
@@ -482,7 +498,7 @@ export function mount(root: HTMLElement): void {
   const clampedPxPerTick = (px: number): number => {
     if (!model) return px;
     const span = model.maxTick - model.minTick;
-    const minPx = span > 0 ? Math.min(glCanvas.width / span, 0.05) : 0.05;
+    const minPx = span > 0 ? Math.min(cssW / span, 0.05) : 0.05;
     return Math.max(minPx, Math.min(px, 2));
   };
   function tickMargin(): number {
@@ -494,7 +510,7 @@ export function mount(root: HTMLElement): void {
     const margin = tickMargin();
     const lo = model.minTick - margin;
     const hi = model.maxTick + margin;
-    const widthTicks = glCanvas.width / Math.max(1e-4, cam.pxPerTick);
+    const widthTicks = cssW / Math.max(1e-4, cam.pxPerTick);
     let s = cam.scrollTick;
     const minS = lo;
     const maxS = hi - widthTicks;
@@ -515,7 +531,7 @@ export function mount(root: HTMLElement): void {
     const m = tickMargin();
     const lo = model.minTick - m;
     const hi = model.maxTick + m;
-    const W = glCanvas.width / Math.max(1e-4, cam.pxPerTick);
+    const W = cssW / Math.max(1e-4, cam.pxPerTick);
     if (W >= (hi - lo)) {
       // Whole piece + margin fits: keep it fully inside, centred.
       return { ...cam, scrollTick: lo - (W - (hi - lo)) / 2 };
@@ -525,7 +541,7 @@ export function mount(root: HTMLElement): void {
     return { ...cam, scrollTick: s };
   }
   function zoomHorizontal(factor: number): void {
-    const cx = glCanvas.width / 2;
+    const cx = cssW / 2;
     const anchorTick = xToTick(camera, cx);
     const npx = clampedPxPerTick(camera.pxPerTick * factor);
     const after = { ...camera, pxPerTick: npx, scrollTick: anchorTick - cx / npx };
@@ -604,6 +620,49 @@ export function mount(root: HTMLElement): void {
     pos: audio?.getPositionSeconds() ?? 0,
   });
 
+  (window as unknown as Record<string, unknown>).__appCamera = () => ({
+    scrollTick: camera.scrollTick,
+    pxPerTick: camera.pxPerTick,
+    topPitch: camera.topPitch,
+    pxPerPitch: camera.pxPerPitch,
+  });
+
+  (window as unknown as Record<string, unknown>).__audioProbe = () => ({
+    ctxNow: audio && audio instanceof WavAudioSource ? audio.ctxNow() : 0,
+    pos: audio?.getPositionSeconds() ?? 0,
+    raw: audio instanceof WavAudioSource ? audio.rawClockPositionSeconds() : 0,
+    outLat: audio instanceof WavAudioSource ? audio.outputLatencySeconds() : 0,
+  });
+
+  // ---- judder telemetry (120Hz real-display diagnosis) ----
+  (window as unknown as Record<string, unknown>).__tickDiag = () => ({ snapshot: stream.stats(), size: stream.size });
+
+  // nominal display refresh in Hz (VSR-aware: starts at 60, upconverts only when
+  // rAF consistently runs faster). Separated so the UI counter never aliases.
+  let displayHz = 60;
+  {
+    let rafSum = 0, rafN = 0, rafMin = 1e9;
+    let lastT = performance.now();
+    const probeLoop = (now: number): void => {
+      const d = now - lastT; lastT = now;
+      if (d > 0 && d < 100) {
+        rafSum += d; rafN++; if (d < rafMin) rafMin = d;
+        if (rafN >= 60) {
+          const avg = rafSum / rafN;
+          const est = 1000 / avg;
+          // 120-class when sustained cadence is ~8.3ms; stay at 60 otherwise
+          let r = 60;
+          if (est >= 90) r = 120;
+          if (rafMin <= 9.5) r = 120;
+          displayHz = r;
+          rafSum = 0; rafN = 0; rafMin = 1e9;
+        }
+      }
+      requestAnimationFrame(probeLoop);
+    };
+    requestAnimationFrame(probeLoop);
+  }
+
   // ---- render loop ----
   let lastNow = performance.now();
   const oCtx = overlay.getContext('2d')!;
@@ -618,21 +677,63 @@ export function mount(root: HTMLElement): void {
     if (!model || !tempoMap) { requestAnimationFrame(frame); return; }
 
     if (audio?.loaded) {
-      playheadTick = secondsToTick(tempoMap, audio.getPositionSeconds());
+      // Canonical audio position stays the engine clock. The presentation
+      // clock extrapolates between the two latest distinct samples so the
+      // visual playhead glides at 120fps instead of stepping in audio-quantum
+      // chunks (which made the whole picture judder every 3rd-4th frame).
+      const rawPos = audio.getPositionSeconds();
+      playheadTick = secondsToTick(tempoMap, rawPos);
+      if (audio.playing) {
+        visualTick = secondsToTick(tempoMap, present.update(rawPos, now));
+      } else {
+        visualTick = playheadTick;
+        present.reset();
+      }
     }
     // Karaoke follow: drive the camera only during active playback so the
     // view doesn't fight the user's manual pan/zoom when idle or stopped.
-    if (audio?.playing) camera = followScroll(camera, playheadTick);
+    if (audio?.playing) camera = followScroll(camera, visualTick);
     updateScrollbars();
-    const view = renderView();
+    const view = rendererView();
     renderer.draw(model, view);
+    if (audio?.loaded) {
+      // Push one frame of telemetry (off hot path: ring push only).
+      const aSrc = audio as WavAudioSource;
+      stream.push({
+        rafMs: now,
+        audioCtxSec: aSrc.ctxNow(),
+        audioSec: audio.getPositionSeconds(),
+        playheadTick: visualTick,
+        scrollTick: camera.scrollTick,
+        gridX: 0,
+        noteX: 0,
+        playheadX: tickToX(camera, visualTick),
+        fpsBrowser: st.avgFps,
+        displayHz,
+        dpr: dpr(),
+        backingW: glCanvas.width,
+        backingH: glCanvas.height,
+        gpuMs: renderer.drawMs,
+        cpuMs: renderer.cpuUpdateMs,
+        uploadBytes: renderer.lastUploadBytes,
+        visible: renderer.lastVisible,
+      });
+    }
 
-    const oview: CameraView = { ...camera, viewportWidth: glCanvas.width, viewportHeight: glCanvas.height };
+    // Scale the 2D overlay context so the CSS-pixel camera math maps 1:1 onto
+    // the (DPR-sized) backing store — matches the WebGL note layer exactly.
+    const d = dpr();
+    oCtx.setTransform(d, 0, 0, d, 0, 0);
+    const oview: CameraView = { ...camera, viewportWidth: cssW, viewportHeight: cssH, dpr: d };
     const range = { left: oview.scrollTick, right: oview.scrollTick + oview.viewportWidth / oview.pxPerTick };
     const grid = adaptiveGridConfig(gridConfig(4, 2, ppq, gridDiv), oview.pxPerTick);
     const showBarText = barPxSpacing(grid, oview.pxPerTick) >= 90;
-    drawGridAndPlayhead(oCtx, oview, grid, range, playheadTick, undefined, showBarText);
-    drawMarkersAndRegions(oCtx, oview, engine.markers, regions, engine.selectedId);
+    // During playback the playhead/notes move every frame; snap the overlay to
+    // exact positions (no sub-pixel rounding) so it tracks the GPU notes in
+    // lockstep instead of flickering between half-pixel offsets.
+    const moving = audio?.playing === true;
+    drawGridAndPlayhead(oCtx, oview, grid, range, visualTick, undefined, showBarText, moving);
+    drawMarkersAndRegions(oCtx, oview, engine.markers, regions, engine.selectedId, undefined, moving);
     if (pCtx) drawPianoKeys(piano, oview);
 
     const sec = tempoMap ? tickToSeconds(tempoMap, playheadTick) : 0;
@@ -644,13 +745,30 @@ export function mount(root: HTMLElement): void {
     visEl.textContent = 'vis ' + renderer.lastVisible;
     rafEl.textContent = 'rAF ' + (rstat.observedHz > 0 ? rstat.observedHz.toFixed(0) + 'Hz' : '—') + ' · ' + rstat.notes;
 
-    // debug bar
+    // ---- real-time judder diagnostics on the WQXGA@120Hz panel ----
+    const snap = stream.stats();
+    const dFmt = (d: TickStreamSnapshot['deltas']['audioTick']): string =>
+      `a${d.avg.toFixed(2)}/m${d.max.toFixed(2)}/p1${d.p1.toFixed(2)}/p99${d.p99.toFixed(2)} j${d.maxJump.toFixed(2)}`;
+    const mono = (v: boolean): string => (v ? '✓' : '✗');
+    const dt = snap.deltas;
     const bb = tempoMap ? tickToBarBeat(playheadTick, ppq, 4, 2) : null;
-    dbgRaw.textContent = 'raw ' + playheadTick.toFixed(1);
     const qr = quantizeTick(playheadTick, engine.layout.division, { ppq, numerator: 4 }).quantizedTick;
+    dbgRaw.textContent = 'raw ' + playheadTick.toFixed(1);
     dbgQuant.textContent = 'quant ' + qr;
-    dbgAudio.textContent = 'audio ' + sec.toFixed(3) + 's';
-    dbgBar.textContent = bb ? `bar ${bb.bar} beat ${bb.beat}` : 'bar —';
+    dbgAudio.textContent =
+      `dH ${snap.displayHz}Hz raf ${snap.rafHz.toFixed(0)}Hz(${snap.rafMedianMs.toFixed(2)}ms)` +
+      ` ctx ${snap.audioCtxSec.toFixed(3)}s pos ${snap.audioSec.toFixed(3)}s` +
+      ` · vis ${visualTick.toFixed(1)} (${mono(snap.monotonic.playhead)}) scrollTick ${snap.scrollTick.toFixed(1)}(${mono(snap.monotonic.scroll)})` +
+      ` px @${snap.playheadX.toFixed(1)}(${mono(snap.monotonic.playheadX)})` +
+      ` · dpr ${snap.dpr} bk ${snap.backing.w}x${snap.backing.h}` +
+      ` · gpu ${snap.gpuMs.toFixed(3)}ms cpu ${snap.cpuMs.toFixed(3)}ms up ${snap.uploadBytes}B`;
+    dbgBar.textContent =
+      `Δtick avg/max/p1/p99 ${dFmt(dt.audioTick)}` +
+      ` · Δscroll ${dFmt(dt.scrollTick)}` +
+      ` · Δraf ${dFmt(dt.raf)}` +
+      (bb ? ` · ${bb.bar}/${bb.beat}` : '') +
+      (snap.frameDropHint ? ' · ⚠ frame-drop' : '') +
+      (snap.notes.length ? ' · ' + snap.notes.join(' · ') : '');
 
     requestAnimationFrame(frame);
   };

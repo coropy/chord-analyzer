@@ -19,6 +19,8 @@ export interface Camera {
 export interface CameraView extends Camera {
   viewportWidth: number;
   viewportHeight: number;
+  /** devicePixelRatio for physical canvas backing stores. */
+  dpr?: number;
 }
 
 export function makeCamera(init: Partial<Camera> = {}): Camera {

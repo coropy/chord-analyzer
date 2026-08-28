@@ -51,8 +51,15 @@ export interface VisibleRange { left: number; right: number; }
  *  integer pixel while the camera keeps moving, then jump — visible as judder
  *  against the GPU-rendered notes which move continuously.
  *  Rounding to nearest half-pixel keeps <0.5px per-frame drift invisible while
- *  the line centre lands on a pixel, keeping 1px strokes sharp. */
-export function snapCoord(x: number): number {
+ *  the line centre lands on a pixel, keeping 1px strokes sharp.
+ *
+ *  During playback/scroll the camera moves continuously, so a sub-pixel snap
+ *  would make grid lines step in 0.5px increments while the GPU notes glide
+ *  continuously: the two layers drift apart and re-overlap each frame, reading
+ *  as a double-image flicker. Pass `moving=true` while the view scrolls so the
+ *  overlay matches the notes exactly (no rounding). */
+export function snapCoord(x: number, moving = false): number {
+  if (moving) return x;
   return Math.round(x * 2) / 2;
 }
 
@@ -68,6 +75,7 @@ export function drawGridAndPlayhead(
   playheadTick: number,
   theme: OverlayTheme = defaultTheme,
   showBarText = true,
+  moving = false,
 ): void {
   ctx.clearRect(0, 0, view.viewportWidth, view.viewportHeight);
 
@@ -76,7 +84,7 @@ export function drawGridAndPlayhead(
   for (const l of lines) {
     // Adaptive snap: full-pixel crisp when nearly still, half-pixel glide
     // during scroll so grid/notes stay in lockstep without 1-2px jumps.
-    const x = snapCoord(tickToX(view, l.tick));
+    const x = snapCoord(tickToX(view, l.tick), moving);
     if (x < -1 || x > view.viewportWidth + 1) continue;
     ctx.strokeStyle =
       l.kind === 'bar' ? theme.barLine :
@@ -99,7 +107,7 @@ export function drawGridAndPlayhead(
   const p1 = Math.ceil(Math.max(topP, botP) / 12) * 12;
   for (let p = p0; p <= p1; p += 12) {
     if (p < 0 || p > 127) continue;
-    const y = snapCoord(pitchToY(view, p));
+    const y = snapCoord(pitchToY(view, p), moving);
     ctx.strokeStyle = theme.octaveLine;
     ctx.beginPath();
     ctx.moveTo(0, y);
@@ -108,7 +116,7 @@ export function drawGridAndPlayhead(
   }
 
   // playhead
-  const px = snapCoord(tickToX(view, playheadTick));
+  const px = snapCoord(tickToX(view, playheadTick), moving);
   ctx.strokeStyle = theme.playhead;
   ctx.lineWidth = 2;
   ctx.beginPath();
@@ -129,6 +137,7 @@ export function drawMarkersAndRegions(
   regions: ChordRegion[],
   selectedId: number | null,
   theme: OverlayTheme = defaultTheme,
+  moving = false,
 ): void {
   // regions first (under markers)
   ctx.fillStyle = theme.region;
@@ -143,7 +152,7 @@ export function drawMarkersAndRegions(
   for (const m of markers) {
     const t = effectiveTick(m);
     // adaptive snap for crisp lines when still, sub-pixel glide during playback
-    const x = snapCoord(tickToX(view, t));
+    const x = snapCoord(tickToX(view, t), moving);
     if (x < -2 || x > view.viewportWidth + 2) continue;
     ctx.strokeStyle = m.id === selectedId ? theme.markerSelected : theme.marker;
     ctx.beginPath();
@@ -161,8 +170,10 @@ export function drawPianoKeys(
 ): void {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
-  const W = canvas.width;
-  const H = canvas.height;
+  const d = view.dpr && view.dpr > 0 ? view.dpr : 1;
+  const W = canvas.width / d;  // logical CSS width
+  const H = canvas.height / d; // logical CSS height
+  ctx.setTransform(d, 0, 0, d, 0, 0);
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = theme.keyBg;
   ctx.fillRect(0, 0, W, H);

@@ -146,6 +146,22 @@ export class WavAudioSource implements AudioTimelineSource {
     return Math.max(0, Math.min(this.duration, this.clockPosition()));
   }
 
+  /** Raw engine audio position WITHOUT output-latency correction (probe). */
+  rawClockPositionSeconds(): number {
+    if (!this.ctx || !this.playing || !this.source) return this.baseOffset;
+    return this.baseOffset + (this.ctx.currentTime - this.scheduledAt);
+  }
+
+  /** Configured engine output latency in seconds (probe). */
+  outputLatencySeconds(): number {
+    return this.ctx?.outputLatency ?? 0;
+  }
+
+  /** Current AudioContext clock (seconds) — read-only probe for diagnostics. */
+  ctxNow(): number {
+    return this.ctx?.currentTime ?? 0;
+  }
+
   getSnapshot(): AudioSnapshot {
     return { positionSeconds: this.getPositionSeconds(), playing: this.playing, durationSeconds: this.duration };
   }

@@ -69,6 +69,7 @@ class ScenarioDriver {
       pxPerPitch: (h - 40) / 88,
       viewportWidth: w,
       viewportHeight: h,
+      dpr: 1,
     };
   }
 }

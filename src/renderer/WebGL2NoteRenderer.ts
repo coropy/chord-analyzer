@@ -8,9 +8,10 @@
  *    reused instance buffer, then issues a single instanced draw.
  *  - Vertex shader maps (tick,pitch) -> NDC via camera uniforms. Zoom, scroll,
  *    pitch range are uniforms — changing them uploads no note data.
- *  - CPU->GPU transfer minimized: only the visible slice is re-uploaded via
- *    gl.bufferSubData into one reused buffer, and only when the visible count
- *    changed. Pure playback changes no uniform beyond camera (none needed for notes).
+ *  - CPU->GPU transfer minimized: only the visible slice is re-uploaded each
+ *    frame into one reused buffer (count alone can stay flat while the set
+ *    changes, so we upload unconditionally — a few KB/frame is negligible).
+ *    Pure playback changes no uniform beyond camera (none needed for notes).
  *  - Render loop allocates nothing: instance scratch is reused, buffers preallocated.
  */
 
@@ -54,8 +55,11 @@ export interface RenderView {
   pxPerTick: number;
   topPitch: number;
   pxPerPitch: number;
+  /** Logical CSS-pixel viewport (what the UI/camera math uses). */
   viewportWidth: number;
   viewportHeight: number;
+  /** devicePixelRatio: physical backing store = viewport * dpr. */
+  dpr: number;
 }
 
 export interface GLNoteRenderer {
@@ -93,7 +97,6 @@ export class WebGL2NoteRenderer implements GLNoteRenderer {
   private instVbo: WebGLBuffer;
   private scratch: Float32Array = new Float32Array(0);
   private scratchCap = 0;
-  private lastVisibleUploaded = -1;
 
   constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
@@ -136,13 +139,12 @@ export class WebGL2NoteRenderer implements GLNoteRenderer {
   }
 
   uploadNotes(_n: NoteSet): void {
-    this.lastVisibleUploaded = -1; // force re-upload next draw
+    // no upload state to invalidate; cull + upload run fresh every frame
   }
 
   private trackVisible: boolean[] | null = null;
   setTrackVisibility(v: boolean[] | null): void {
     this.trackVisible = v;
-    this.lastVisibleUploaded = -1; // force re-cull
   }
 
   /** Fill scratch with visible notes; return visible count. */
@@ -194,13 +196,15 @@ export class WebGL2NoteRenderer implements GLNoteRenderer {
     const visible = this.cull(n, tLo, tHi);
     this.cpuUpdateMs = performance.now() - t0;
 
-    if (visible !== this.lastVisibleUploaded || visible === 0) {
-      if (visible > 0) {
-        g.bindBuffer(g.ARRAY_BUFFER, this.instVbo);
-        g.bufferSubData(g.ARRAY_BUFFER, 0, this.scratch.subarray(0, visible * 4), 0);
-        this.lastUploadBytes = visible * 16;
-      }
-      this.lastVisibleUploaded = visible;
+    // Upload the visible slice EVERY frame. The visible count can stay the same
+    // while the set changes (a note leaves the left edge, another enters the
+    // right); gating upload on the count left the on-screen geometry stale and
+    // made playback step in chunks (felt like ~30fps despite 120fps rAF).
+    // bufferSubData of a few KB/frame is negligible.
+    if (visible > 0) {
+      g.bindBuffer(g.ARRAY_BUFFER, this.instVbo);
+      g.bufferSubData(g.ARRAY_BUFFER, 0, this.scratch.subarray(0, visible * 4));
+      this.lastUploadBytes = visible * 16;
     }
 
     const ds = performance.now();
@@ -211,7 +215,9 @@ export class WebGL2NoteRenderer implements GLNoteRenderer {
     g.uniform1f(this.uniforms.uTopPitch, view.topPitch);
     g.uniform2f(this.uniforms.uViewport, view.viewportWidth, view.viewportHeight);
     g.bindVertexArray(this.vao);
-    g.viewport(0, 0, view.viewportWidth, view.viewportHeight);
+    // Physical pixels: scale the logical viewport by DPR so geometry maps 1:1
+    // to the backing store and matches the (CSS-px-scaled) 2D overlay exactly.
+    g.viewport(0, 0, Math.round(view.viewportWidth * view.dpr), Math.round(view.viewportHeight * view.dpr));
     if (visible > 0) g.drawArraysInstanced(g.TRIANGLES, 0, 6, visible);
     g.bindVertexArray(null);
     this.drawMs = performance.now() - ds;
